@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<template encoding-version="1.3">
+  <description>Sample 1.x template for migration tests</description>
+  <name>legacy-intake</name>
+  <snippet>
+    <processors>
+      <id>1f0b9a10-0000-1000-0000-000000000001</id>
+      <name>Fetch Feed</name>
+      <type>org.apache.nifi.processors.standard.GetHTTP</type>
+      <bundle>
+        <artifact>nifi-standard-nar</artifact>
+        <group>org.apache.nifi</group>
+        <version>1.25.0</version>
+      </bundle>
+      <config>
+        <schedulingStrategy>TIMER_DRIVEN</schedulingStrategy>
+        <schedulingPeriod>60 sec</schedulingPeriod>
+        <properties>
+          <entry>
+            <key>URL</key>
+            <value>https://example.test/feed.json</value>
+          </entry>
+          <entry>
+            <key>Filename</key>
+            <value>feed.json</value>
+          </entry>
+        </properties>
+      </config>
+    </processors>
+    <processors>
+      <id>1f0b9a10-0000-1000-0000-000000000002</id>
+      <name>Reshape Records</name>
+      <type>org.apache.nifi.processors.standard.JoltTransformJSON</type>
+      <bundle>
+        <artifact>nifi-standard-nar</artifact>
+        <group>org.apache.nifi</group>
+        <version>1.25.0</version>
+      </bundle>
+      <config>
+        <schedulingStrategy>EVENT_DRIVEN</schedulingStrategy>
+        <schedulingPeriod>0 sec</schedulingPeriod>
+        <properties>
+          <entry>
+            <key>Jolt Transformation DSL</key>
+            <value>jolt-transform-shift</value>
+          </entry>
+          <entry>
+            <key>Jolt Specification</key>
+            <value>{"*": "&amp;"}</value>
+          </entry>
+          <entry>
+            <key>Output Directory</key>
+            <value>${outputRoot}/reshaped</value>
+          </entry>
+        </properties>
+        <autoTerminatedRelationships>failure</autoTerminatedRelationships>
+      </config>
+    </processors>
+    <processors>
+      <id>1f0b9a10-0000-1000-0000-000000000003</id>
+      <name>Write Result</name>
+      <type>org.apache.nifi.processors.standard.PutFile</type>
+      <bundle>
+        <artifact>nifi-standard-nar</artifact>
+        <group>org.apache.nifi</group>
+        <version>1.25.0</version>
+      </bundle>
+      <config>
+        <schedulingStrategy>TIMER_DRIVEN</schedulingStrategy>
+        <schedulingPeriod>0 sec</schedulingPeriod>
+        <properties>
+          <entry>
+            <key>Directory</key>
+            <value>/data/out</value>
+          </entry>
+        </properties>
+        <autoTerminatedRelationships>success</autoTerminatedRelationships>
+        <autoTerminatedRelationships>failure</autoTerminatedRelationships>
+      </config>
+    </processors>
+    <controllerServices>
+      <id>1f0b9a10-0000-1000-0000-00000000000a</id>
+      <name>Cache Client</name>
+      <type>org.apache.nifi.distributed.cache.client.DistributedMapCacheClientService</type>
+      <bundle>
+        <artifact>nifi-distributed-cache-services-nar</artifact>
+        <group>org.apache.nifi</group>
+        <version>1.25.0</version>
+      </bundle>
+      <properties>
+        <entry>
+          <key>Server Hostname</key>
+          <value>localhost</value>
+        </entry>
+      </properties>
+    </controllerServices>
+    <connections>
+      <id>1f0b9a10-0000-1000-0000-0000000000c1</id>
+      <name>fetch-to-reshape</name>
+      <backPressureDataSizeThreshold>100 MB</backPressureDataSizeThreshold>
+      <backPressureObjectThreshold>1000</backPressureObjectThreshold>
+      <source>
+        <groupId>1f0b9a10-0000-1000-0000-0000000000g0</groupId>
+        <id>1f0b9a10-0000-1000-0000-000000000001</id>
+        <type>PROCESSOR</type>
+      </source>
+      <destination>
+        <groupId>1f0b9a10-0000-1000-0000-0000000000g0</groupId>
+        <id>1f0b9a10-0000-1000-0000-000000000002</id>
+        <type>PROCESSOR</type>
+      </destination>
+      <flowFileExpiration>5 mins</flowFileExpiration>
+      <labelIndex>1</labelIndex>
+      <selectedRelationships>success</selectedRelationships>
+    </connections>
+    <connections>
+      <id>1f0b9a10-0000-1000-0000-0000000000c2</id>
+      <name>reshape-to-write</name>
+      <source>
+        <groupId>1f0b9a10-0000-1000-0000-0000000000g0</groupId>
+        <id>1f0b9a10-0000-1000-0000-000000000002</id>
+        <type>PROCESSOR</type>
+      </source>
+      <destination>
+        <groupId>1f0b9a10-0000-1000-0000-0000000000g0</groupId>
+        <id>1f0b9a10-0000-1000-0000-000000000003</id>
+        <type>PROCESSOR</type>
+      </destination>
+      <selectedRelationships>success</selectedRelationships>
+    </connections>
+    <funnels>
+      <id>1f0b9a10-0000-1000-0000-0000000000f1</id>
+    </funnels>
+    <inputPorts>
+      <id>1f0b9a10-0000-1000-0000-0000000000p1</id>
+      <name>From Upstream</name>
+    </inputPorts>
+    <processGroups>
+      <id>1f0b9a10-0000-1000-0000-0000000000g1</id>
+      <name>Staging</name>
+      <variables>
+        <name>outputRoot</name>
+        <value>/data</value>
+      </variables>
+      <contents>
+        <processors>
+          <id>1f0b9a10-0000-1000-0000-000000000004</id>
+          <name>Log Attributes</name>
+          <type>org.apache.nifi.processors.standard.LogAttribute</type>
+          <bundle>
+            <artifact>nifi-standard-nar</artifact>
+            <group>org.apache.nifi</group>
+            <version>1.25.0</version>
+          </bundle>
+          <config>
+            <schedulingStrategy>TIMER_DRIVEN</schedulingStrategy>
+            <schedulingPeriod>0 sec</schedulingPeriod>
+            <properties>
+              <entry>
+                <key>Log Level</key>
+                <value>info</value>
+              </entry>
+            </properties>
+          </config>
+        </processors>
+      </contents>
+    </processGroups>
+  </snippet>
+</template>

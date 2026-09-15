@@ -1,0 +1,26 @@
+# Secrets — never commit credentials
+.env
+.env.*
+!.env.example
+
+# Virtualenvs / caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+Thumbs.db
+
+# Local runtime and generated artifacts
+data/
+migrations/
+deck-assets/
+deck-preview/
+input/
+*.log
+*.pptx
+
+# Generated flow specs (keep the directory and hand-written templates)
+flows/*.json
+!flows/.gitkeep

@@ -1,0 +1,75 @@
+{
+  "flowContents": {
+    "identifier": "b2c3d4e5-0000-1000-0000-000000000000",
+    "name": "legacy-json-flow",
+    "comments": "NiFi 1.x flow definition — proves a .json upload is not necessarily 2.x",
+    "processors": [
+      {
+        "identifier": "b2c3d4e5-0000-1000-0000-000000000001",
+        "name": "Read Input",
+        "type": "org.apache.nifi.processors.standard.GetFile",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "1.23.2"
+        },
+        "schedulingStrategy": "TIMER_DRIVEN",
+        "schedulingPeriod": "10 sec",
+        "properties": {
+          "Input Directory": "/data/in",
+          "Keep Source File": "false"
+        },
+        "autoTerminatedRelationships": []
+      },
+      {
+        "identifier": "b2c3d4e5-0000-1000-0000-000000000002",
+        "name": "Push Downstream",
+        "type": "org.apache.nifi.processors.standard.PostHTTP",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "1.23.2"
+        },
+        "schedulingStrategy": "EVENT_DRIVEN",
+        "schedulingPeriod": "0 sec",
+        "properties": {
+          "URL": "https://downstream.test/ingest"
+        },
+        "autoTerminatedRelationships": ["failure"]
+      }
+    ],
+    "controllerServices": [
+      {
+        "identifier": "b2c3d4e5-0000-1000-0000-00000000000a",
+        "name": "CSV Writer",
+        "type": "org.apache.nifi.csv.CSVRecordSetWriter",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-record-serialization-services-nar",
+          "version": "1.23.2"
+        },
+        "properties": {
+          "Schema Write Strategy": "no-schema"
+        }
+      }
+    ],
+    "connections": [
+      {
+        "identifier": "b2c3d4e5-0000-1000-0000-0000000000c1",
+        "name": "",
+        "selectedRelationships": ["success"],
+        "source": { "id": "b2c3d4e5-0000-1000-0000-000000000001", "type": "PROCESSOR" },
+        "destination": { "id": "b2c3d4e5-0000-1000-0000-000000000002", "type": "PROCESSOR" }
+      }
+    ],
+    "inputPorts": [],
+    "outputPorts": [],
+    "funnels": [],
+    "processGroups": [],
+    "variables": {
+      "ingestHost": "downstream.test"
+    }
+  },
+  "externalControllerServices": {},
+  "parameterContexts": {}
+}

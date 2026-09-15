@@ -1,0 +1,7 @@
+cursor-sdk
+fastapi
+uvicorn[standard]
+requests
+python-dotenv
+pydantic
+pytest

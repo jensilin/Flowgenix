@@ -1,0 +1,80 @@
+{
+  "processGroupName": "csv-to-json",
+  "position": { "x": 300, "y": 200 },
+  "start": true,
+  "controllerServices": [
+    {
+      "name": "CSVReader",
+      "type": "org.apache.nifi.csv.CSVReader",
+      "properties": {
+        "Schema Access Strategy": "infer-schema",
+        "CSV Format": "conventional",
+        "Value Separator": ",",
+        "Quote Character": "\"",
+        "Escape Character": "\\",
+        "Trim Fields": "true",
+        "Treat First Line as Header": "true"
+      }
+    },
+    {
+      "name": "JsonRecordSetWriter",
+      "type": "org.apache.nifi.json.JsonRecordSetWriter",
+      "properties": {
+        "Schema Write Strategy": "no-schema",
+        "Pretty Print JSON": "true",
+        "output-grouping": "output-array"
+      }
+    }
+  ],
+  "processors": [
+    {
+      "name": "GenerateCSV",
+      "type": "org.apache.nifi.processors.standard.GenerateFlowFile",
+      "x": 100,
+      "y": 120,
+      "schedulingPeriod": "10 sec",
+      "properties": {
+        "File Size": "0B",
+        "Batch Size": "1",
+        "Data Format": "Text",
+        "Unique FlowFiles": "false",
+        "Custom Text": "id,name,amount\n1,Alice,10.5\n2,Bob,20.0\n"
+      },
+      "autoTerminated": []
+    },
+    {
+      "name": "ConvertRecord",
+      "type": "org.apache.nifi.processors.standard.ConvertRecord",
+      "x": 420,
+      "y": 120,
+      "properties": {
+        "Record Reader": "@CSVReader",
+        "Record Writer": "@JsonRecordSetWriter"
+      },
+      "autoTerminated": ["failure"]
+    },
+    {
+      "name": "LogJSON",
+      "type": "org.apache.nifi.processors.standard.LogAttribute",
+      "x": 740,
+      "y": 120,
+      "properties": {
+        "Log Level": "info",
+        "Log Payload": "true"
+      },
+      "autoTerminated": ["success"]
+    }
+  ],
+  "connections": [
+    {
+      "from": "GenerateCSV",
+      "to": "ConvertRecord",
+      "relationships": ["success"]
+    },
+    {
+      "from": "ConvertRecord",
+      "to": "LogJSON",
+      "relationships": ["success"]
+    }
+  ]
+}

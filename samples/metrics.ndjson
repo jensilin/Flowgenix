@@ -1,0 +1,10 @@
+{"name":"cpu_seconds_total","namespace":"host","tags":{"collector":"cpu","cpu":"0","host":"ref-ems-1","mode":"idle"},"timestamp":"2026-04-27T11:43:54.915962349Z","kind":"absolute","counter":{"value":408512.15}}
+{"name":"cpu_seconds_total","namespace":"host","tags":{"collector":"cpu","cpu":"0","host":"ref-ems-1","mode":"io_wait"},"timestamp":"2026-04-27T11:43:54.915962349Z","kind":"absolute","counter":{"value":1256.21}}
+{"name":"cpu_seconds_total","namespace":"host","tags":{"collector":"cpu","cpu":"0","host":"ref-ems-1","mode":"nice"},"timestamp":"2026-04-27T11:43:54.915962349Z","kind":"absolute","counter":{"value":80.43}}
+{"name":"cpu_seconds_total","namespace":"host","tags":{"collector":"cpu","cpu":"0","host":"ref-ems-1","mode":"system"},"timestamp":"2026-04-27T11:43:54.915962349Z","kind":"absolute","counter":{"value":4554.94}}
+{"name":"cpu_seconds_total","namespace":"host","tags":{"collector":"cpu","cpu":"0","host":"ref-ems-1","mode":"user"},"timestamp":"2026-04-27T11:43:54.915962349Z","kind":"absolute","counter":{"value":14002.38}}
+{"name":"cpu_seconds_total","namespace":"host","tags":{"collector":"cpu","cpu":"1","host":"ref-ems-1","mode":"idle"},"timestamp":"2026-04-27T11:43:54.915962349Z","kind":"absolute","counter":{"value":408097.66}}
+{"name":"cpu_seconds_total","namespace":"host","tags":{"collector":"cpu","cpu":"1","host":"ref-ems-1","mode":"io_wait"},"timestamp":"2026-04-27T11:43:54.915962349Z","kind":"absolute","counter":{"value":1461.49}}
+{"name":"cpu_seconds_total","namespace":"host","tags":{"collector":"cpu","cpu":"1","host":"ref-ems-1","mode":"nice"},"timestamp":"2026-04-27T11:43:54.915962349Z","kind":"absolute","counter":{"value":40.6}}
+{"name":"cpu_seconds_total","namespace":"host","tags":{"collector":"cpu","cpu":"1","host":"ref-ems-1","mode":"system"},"timestamp":"2026-04-27T11:43:54.915962349Z","kind":"absolute","counter":{"value":4429.28}}
+{"name":"cpu_seconds_total","namespace":"host","tags":{"collector":"cpu","cpu":"1","host":"ref-ems-1","mode":"user"},"timestamp":"2026-04-27T11:43:54.915962349Z","kind":"absolute","counter":{"value":13875.98}}

@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#124191" />
+  <title>Flow Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,700&family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+  <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path class="theme-icon-sun" d="M12 3v2M12 19v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M3 12h2M19 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/>
+      <circle class="theme-icon-sun" cx="12" cy="12" r="4"/>
+      <path class="theme-icon-moon" d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" fill="currentColor" stroke="none"/>
+    </svg>
+    <span id="theme-toggle-label">Dark</span>
+  </button>
+  <main class="shell">
+    <header class="brand">
+      <h1>Prompt a NiFi flow into existence.</h1>
+      <p class="lede">Detect NiFi version first. Every flow — not just JSON→CSV — uses that release’s processor types and NAR bundle versions.</p>
+    </header>
+
+    <form id="flow-form" class="composer" autocomplete="off">
+      <details class="section" id="section-api" open>
+        <summary>
+          <span class="section-title">Cursor API key &amp; model</span>
+          <span id="section-api-badge" class="section-badge hidden">ready</span>
+          <span class="section-caret" aria-hidden="true"></span>
+        </summary>
+        <div class="section-body">
+          <label class="field">
+            <span>Cursor API key</span>
+            <input id="api-key" type="password" name="api_key" placeholder="cursor_… or crsr_…" required />
+          </label>
+
+          <div class="row">
+            <label class="field grow">
+              <span>Model</span>
+              <select id="model" name="model" required>
+                <option value="">Load models with your API key…</option>
+              </select>
+            </label>
+            <button type="button" id="load-models" class="ghost">Load models</button>
+          </div>
+        </div>
+      </details>
+
+      <details class="section" id="section-nifi" open>
+        <summary>
+          <span class="section-title">NiFi connection + version (all flows)</span>
+          <span id="section-nifi-badge" class="section-badge hidden">connected</span>
+          <span class="section-caret" aria-hidden="true"></span>
+        </summary>
+        <div class="section-body">
+          <label class="field">
+            <span>NiFi URL</span>
+            <input id="nifi-url" type="url" required placeholder="https://127.0.0.1:8443" value="https://127.0.0.1:8443" />
+          </label>
+          <div class="row">
+            <label class="field grow">
+              <span>Username</span>
+              <input id="nifi-user" type="text" required autocomplete="username" />
+            </label>
+            <label class="field grow">
+              <span>Password</span>
+              <input id="nifi-pass" type="password" required autocomplete="current-password" />
+            </label>
+          </div>
+          <label class="check">
+            <input id="remember-nifi" type="checkbox" />
+            <span>Remember in this browser session only (not saved to .env)</span>
+          </label>
+          <button type="button" id="clear-nifi" class="ghost tiny">Clear session NiFi details</button>
+          <div class="row nifi-detect">
+            <button type="button" id="detect-nifi" class="ghost">Detect NiFi version</button>
+            <span id="nifi-version-pill" class="pill">version unknown</span>
+          </div>
+          <p id="nifi-strategy" class="hint hidden"></p>
+        </div>
+      </details>
+
+      <div class="section toggle-section" id="section-json">
+        <div class="section-header">
+          <span class="section-title">JSON → CSV (optional upload)</span>
+          <label class="switch" title="Enable JSON upload for JSON→CSV flows">
+            <input type="checkbox" id="json-csv-toggle" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+          </label>
+        </div>
+        <div class="section-body hidden" id="json-csv-body">
+          <label class="field">
+            <span>Upload JSON file</span>
+            <input id="json-file" type="file" accept=".json,.ndjson,.jsonl,.jsonlines,.txt,.log,application/json,application/x-ndjson,text/plain" />
+          </label>
+          <p id="json-meta" class="hint">Accepts a JSON object, a JSON array, or NDJSON / JSON Lines (one object per line). The file is analyzed for its schema only — the generated flow reads real files with GetFile, flattens them with an auto-configured Jolt spec, and writes CSV with PutFile. Your upload is copied into the pickup directory so the flow produces output immediately. Processor class names and NAR versions always come from the detected NiFi version.</p>
+          <div id="json-fields" class="fields-panel hidden">
+            <div class="fields-head">
+              <span id="json-fields-count" class="fields-count"></span>
+              <span class="fields-actions">
+                <button type="button" id="fields-all" class="linkish">Select all</button>
+                <button type="button" id="fields-none" class="linkish">Clear all</button>
+              </span>
+            </div>
+            <p class="hint">Untick a field to leave it out of the CSV — it is removed from the Jolt spec and the writer schema, so NiFi never writes that column.</p>
+            <div id="json-columns" class="chips"></div>
+          </div>
+          <label class="dry-run-toggle">
+            <input type="checkbox" id="json-csv-dry-run" />
+            <span>Review before deploying (show plan and diff, don't touch NiFi)</span>
+          </label>
+          <details class="golden-details">
+            <summary>Golden file (optional): compare the flow's real output against a file you know is correct</summary>
+            <div class="golden-body">
+              <label class="field">
+                <span>Expected output file</span>
+                <input id="golden-file" type="file" accept=".csv,.txt,text/csv,text/plain" />
+              </label>
+              <p id="golden-meta" class="hint">Drop the CSV you expect the flow to produce. After deploy, the test suite reads the file the flow wrote and reports whether it matches (line-by-line, trailing whitespace ignored).</p>
+              <button type="button" id="golden-clear" class="ghost tiny" disabled>Clear expected file</button>
+            </div>
+          </details>
+          <div class="actions compact">
+            <button type="button" id="analyze-json" class="ghost" disabled>Analyze JSON</button>
+            <button type="button" id="create-json-csv" class="primary" disabled>Create JSON→CSV flow</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section toggle-section" id="section-migration">
+        <div class="section-header">
+          <span class="section-title">NiFi migration (upgrade an existing flow)</span>
+          <label class="switch" title="Migrate an exported NiFi flow or template to another NiFi version">
+            <input type="checkbox" id="migration-toggle" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+          </label>
+        </div>
+        <div class="section-body hidden" id="migration-body">
+          <label class="field">
+            <span>Upload NiFi flow or template</span>
+            <input id="migration-file" type="file" accept=".xml,.json,application/xml,text/xml,application/json" />
+          </label>
+          <p id="migration-meta" class="hint">
+            Accepts a NiFi 1.x template (<code>.xml</code>) or a flow definition (<code>.json</code>) from
+            either NiFi 1.x or 2.x. A <code>.json</code> file is never assumed to be 2.x — the source
+            version is read from the NAR bundle versions inside the file, and you are asked to pick it
+            only when the file genuinely does not say. Your upload is never modified.
+          </p>
+
+          <div id="migration-detect" class="detect-panel hidden">
+            <div class="detect-head">
+              <span id="migration-format-pill" class="pill">format unknown</span>
+              <span id="migration-version-pill" class="pill">version unknown</span>
+              <span id="migration-count-pill" class="pill">0 components</span>
+            </div>
+            <p id="migration-evidence" class="hint"></p>
+          </div>
+
+          <div class="row">
+            <label class="field grow">
+              <span>Source NiFi version</span>
+              <select id="migration-source-version"></select>
+            </label>
+            <label class="field grow">
+              <span>Target NiFi version</span>
+              <select id="migration-target-version"></select>
+            </label>
+          </div>
+          <div class="row">
+            <label class="field grow">
+              <span>AI model for migration analysis</span>
+              <select id="migration-model"></select>
+            </label>
+          </div>
+          <label class="dry-run-toggle">
+            <input type="checkbox" id="migration-use-ai" checked />
+            <span>Use the AI model to explain components the rule base cannot resolve</span>
+          </label>
+          <p class="hint">
+            Compatibility is decided from the target version's installed component catalog and a
+            curated rule base first. The AI model only annotates what those cannot settle, and its
+            suggestions are never applied to the generated flow automatically.
+          </p>
+
+          <div class="actions compact">
+            <button type="button" id="migration-analyze" class="ghost" disabled>Analyze migration</button>
+            <button type="button" id="migration-generate" class="primary" disabled>Generate migrated flow</button>
+          </div>
+
+          <div id="migration-report" class="migration-report hidden">
+            <div class="migration-summary">
+              <div class="migration-head">
+                <h3 id="migration-report-title">Migration summary</h3>
+                <span id="migration-report-pill" class="pill">analysing…</span>
+              </div>
+              <div id="migration-stats" class="migration-stats"></div>
+            </div>
+            <div id="migration-concerns" class="migration-concerns hidden"></div>
+            <div id="migration-details" class="migration-details"></div>
+            <div id="migration-warnings" class="migration-warnings hidden"></div>
+            <div id="migration-artifacts" class="migration-artifacts hidden"></div>
+          </div>
+        </div>
+      </div>
+
+      <label class="field">
+        <span>Flow prompt</span>
+        <textarea id="prompt" name="prompt" rows="5" required placeholder="Describe the NiFi flow to create…"></textarea>
+      </label>
+      <p class="hint">Not sure how to phrase it? Open the <strong>Prompt assistant</strong> at the bottom right, describe your scenario, and it writes the prompt for you using the processors your NiFi actually has.</p>
+
+      <div class="examples">
+        <p class="examples-label">Try a complex prompt</p>
+        <div id="prompt-examples" class="chips"></div>
+      </div>
+
+      <div class="actions">
+        <button type="submit" id="create" class="primary" title="Create flow from prompt (Ctrl+Enter)">Create flow from prompt</button>
+        <button type="button" id="download-json" class="ghost" disabled>Download generated JSON</button>
+        <a id="nifi-link" class="link" href="https://127.0.0.1:8443/nifi/" target="_blank" rel="noreferrer">Open NiFi UI</a>
+      </div>
+      <p class="hint shortcuts">
+        Shortcuts: <kbd>Ctrl</kbd>+<kbd>Enter</kbd> create flow · <kbd>Ctrl</kbd>+<kbd>/</kbd> toggle prompt assistant · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> dark mode · <kbd>Esc</kbd> close assistant
+      </p>
+    </form>
+
+    <section class="log" aria-live="polite">
+      <div class="log-head">
+        <h2>Run log</h2>
+        <div class="log-head-actions">
+          <span id="status-pill" class="pill">idle</span>
+          <button type="button" id="export-log" class="ghost tiny" disabled>Export logs</button>
+        </div>
+      </div>
+      <div id="log"></div>
+      <div id="download-panel" class="download-panel hidden">
+        <p id="download-meta"></p>
+        <a id="download-link" class="primary link-btn" href="#" download>Download flow JSON</a>
+      </div>
+
+      <div id="plan-panel" class="plan-panel hidden">
+        <div class="plan-head">
+          <h3>Deploy plan</h3>
+          <span id="plan-summary-pill" class="pill">plan pending</span>
+        </div>
+        <p class="hint">Nothing has been created on NiFi yet. Review the plan below, then click <strong>Deploy this plan</strong> to apply it, or edit the spec and re-run.</p>
+        <div id="plan-summary" class="plan-summary"></div>
+        <div id="plan-warnings" class="plan-warnings"></div>
+        <div id="plan-conflicts" class="plan-conflicts"></div>
+        <details class="plan-tree-details">
+          <summary>Component tree</summary>
+          <div id="plan-tree"></div>
+        </details>
+        <details class="plan-spec-details">
+          <summary>Generated spec JSON</summary>
+          <pre id="plan-spec"></pre>
+        </details>
+        <div class="actions compact">
+          <button type="button" id="plan-deploy" class="primary" disabled>Deploy this plan</button>
+          <button type="button" id="plan-cancel" class="ghost">Discard plan</button>
+        </div>
+      </div>
+
+      <div id="status-panel" class="status-panel hidden">
+        <div class="status-head">
+          <h3>Live status</h3>
+          <span id="status-summary-pill" class="pill">idle</span>
+          <div class="status-actions">
+            <label class="poll-interval">
+              <span>Poll</span>
+              <select id="status-interval">
+                <option value="2000" selected>every 2 s</option>
+                <option value="5000">every 5 s</option>
+                <option value="10000">every 10 s</option>
+                <option value="30000">every 30 s</option>
+              </select>
+            </label>
+            <button type="button" id="status-pause" class="ghost tiny">Pause polling</button>
+            <button type="button" id="status-start" class="ghost tiny" disabled>Start group</button>
+            <button type="button" id="status-stop" class="ghost tiny" disabled>Stop group</button>
+            <button type="button" id="status-delete" class="ghost tiny">Delete group</button>
+          </div>
+        </div>
+        <div class="status-strip" id="status-strip"></div>
+        <div class="status-columns">
+          <div class="status-col">
+            <h4>Processors</h4>
+            <div id="status-processors"></div>
+          </div>
+          <div class="status-col">
+            <h4>Connections</h4>
+            <div id="status-connections"></div>
+          </div>
+        </div>
+        <div class="status-bulletins">
+          <h4>Bulletins</h4>
+          <div id="status-bulletin-list" class="bulletin-list"></div>
+        </div>
+      </div>
+
+      <div id="test-panel" class="test-panel hidden">
+        <div class="test-head">
+          <h3>Flow test results</h3>
+          <span id="test-summary-pill" class="pill">not run</span>
+        </div>
+        <p class="hint">Checks run against the deployed process group over the NiFi REST API, because a flow can deploy cleanly and still never move data.</p>
+        <div id="test-body"></div>
+      </div>
+    </section>
+
+    <section class="log usage-section" aria-live="polite">
+      <div class="log-head">
+        <h2>Token usage by model</h2>
+        <div class="log-head-actions">
+          <span id="usage-total-pill" class="pill">0 tokens</span>
+          <button type="button" id="usage-refresh" class="ghost tiny">Refresh</button>
+          <button type="button" id="usage-reset" class="ghost tiny">Reset</button>
+        </div>
+      </div>
+      <p class="hint">Counted per model across every flow build and prompt assistant reply, from the token usage the Cursor SDK reports for each run. Totals persist across restarts.</p>
+      <div id="usage-body"></div>
+    </section>
+  </main>
+
+  <button type="button" id="bot-launcher" class="bot-launcher" aria-expanded="false" aria-controls="bot-panel" title="Prompt assistant">
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M12 3c4.97 0 9 3.36 9 7.5 0 4.14-4.03 7.5-9 7.5-.99 0-1.94-.13-2.83-.38L4 20l1.14-3.42C3.8 15.24 3 13.46 3 11.5 3 7.36 7.03 4 12 4z"/>
+      <circle cx="8.5" cy="11" r="1.15"/>
+      <circle cx="12" cy="11" r="1.15"/>
+      <circle cx="15.5" cy="11" r="1.15"/>
+    </svg>
+    <span class="bot-launcher-label">Prompt assistant</span>
+  </button>
+
+  <section id="bot-panel" class="bot-panel hidden" aria-label="Flow prompt assistant">
+    <header class="bot-head">
+      <div class="bot-title">
+        <h2>Prompt assistant</h2>
+        <p>Describe your scenario — I'll write the flow prompt.</p>
+      </div>
+      <div class="bot-head-actions">
+        <span id="bot-usage-pill" class="bot-pill hidden" title="Tokens used by the assistant in this session">0 tokens</span>
+        <button type="button" id="bot-clear" class="bot-icon-btn" title="Clear conversation" aria-label="Clear conversation">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+            <path d="M10 11v6M14 11v6"></path>
+          </svg>
+        </button>
+        <button type="button" id="bot-fullscreen" class="bot-icon-btn" title="Toggle full-screen (Ctrl+Shift+F)" aria-label="Toggle full-screen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"></path>
+          </svg>
+        </button>
+        <button type="button" id="bot-close" class="bot-icon-btn" title="Minimise to icon (Esc)" aria-label="Minimise assistant">&minus;</button>
+      </div>
+    </header>
+    <div class="bot-resize-handle" id="bot-resize-handle" title="Drag to resize" aria-hidden="true"></div>
+
+    <div class="bot-model-row">
+      <label for="bot-model">Model</label>
+      <select id="bot-model">
+        <option value="">Load models with your API key…</option>
+      </select>
+    </div>
+
+    <div id="bot-messages" class="bot-messages"></div>
+
+    <form id="bot-form" class="bot-composer">
+      <textarea id="bot-input" rows="2" placeholder="e.g. poll an HTTP API every 5 minutes, keep only failed orders, and drop them into Kafka"></textarea>
+      <button type="submit" id="bot-send" class="primary" title="Send">Send</button>
+    </form>
+  </section>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

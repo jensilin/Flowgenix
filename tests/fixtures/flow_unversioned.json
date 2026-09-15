@@ -1,0 +1,26 @@
+{
+  "flowContents": {
+    "identifier": "d4e5f6a7-0000-1000-0000-000000000000",
+    "name": "ambiguous-flow",
+    "comments": "No bundle versions and no line-specific markers — the source version genuinely cannot be inferred from this file.",
+    "processors": [
+      {
+        "identifier": "d4e5f6a7-0000-1000-0000-000000000001",
+        "name": "Generate",
+        "type": "org.apache.nifi.processors.standard.GenerateFlowFile",
+        "schedulingStrategy": "TIMER_DRIVEN",
+        "schedulingPeriod": "30 sec",
+        "properties": {
+          "File Size": "1 kB"
+        },
+        "autoTerminatedRelationships": []
+      }
+    ],
+    "controllerServices": [],
+    "connections": [],
+    "inputPorts": [],
+    "outputPorts": [],
+    "funnels": [],
+    "processGroups": []
+  }
+}

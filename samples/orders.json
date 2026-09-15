@@ -1,0 +1,16 @@
+[
+  {
+    "orderId": "A-100",
+    "customer": { "name": "Alice", "region": "EU" },
+    "amount": 120.5,
+    "status": "active",
+    "tags": ["vip", "repeat"]
+  },
+  {
+    "orderId": "B-200",
+    "customer": { "name": "Bob", "region": "US" },
+    "amount": 45,
+    "status": "inactive",
+    "tags": ["new"]
+  }
+]

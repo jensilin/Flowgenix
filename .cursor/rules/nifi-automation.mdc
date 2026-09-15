@@ -1,0 +1,101 @@
+---
+description: How Cursor should create and change local NiFi 1.25 flows via REST API
+alwaysApply: true
+---
+
+# NiFi flow automation (local)
+
+When the user asks to create or change an Apache NiFi flow:
+
+1. Use this repo's `nifi_client.py` and scripts (or extend them). Do not invent ad-hoc API shapes.
+2. Credentials come only from `.env` (`NIFI_URL`, `NIFI_USERNAME`, `NIFI_PASSWORD`). Never commit `.env`.
+   Username/password may be blank for an instance with authentication disabled — `login()` confirms
+   the API answers without a token before proceeding, and still raises a clear error when the
+   instance does require credentials. Certificate, Kerberos and OIDC logins are **not** supported.
+3. Self-signed TLS is already handled (`verify=False`). `NIFI_URL` may be pasted as the UI address
+   (`.../nifi/` on 1.x, `.../nf/` on 2.x); `NiFiClient` reduces it to the API root, because the UI
+   answers unknown paths with HTTP 200 and an HTML page rather than an error. Verified against
+   **1.25.0** and **2.11.0** — never hardcode a version, always read it from the live instance.
+4. Prefer creating a new process group under root for each demo/change so the canvas stays tidy.
+5. After creating processors, set `autoTerminatedRelationships` for unused relationships before starting.
+6. Verify by listing the new process group id and telling the user to refresh the NiFi UI.
+7. Use NiFi's full structural toolkit via `build_flow_from_spec.py`, not just a flat processor list:
+   - **Sub-process groups**: nest flow JSON under `"processGroups"` (recursively) to organize complex
+     flows into logical stages, or whenever the user asks for grouping/sub-process-groups.
+   - **Ports** (`"ports": [{"name": ..., "kind": "input"|"output"}]`) are how flow files cross a
+     process-group boundary. In the PARENT's `"connections"`, reference a child group's port as
+     `"<ChildGroupName>.<PortName>"`; inside the child group, reference its own ports by bare name.
+   - **Funnels** (`"funnels": [{"name": ..., "x":.., "y":..}]`) merge multiple connections into one;
+     reference a funnel by name in `"connections"` just like a processor.
+   - **Labels** (`"labels": [{"text": ..., "x":.., "y":.., "width":.., "height":..}]`) annotate the
+     canvas (visual only, not connectable).
+   - Controller services declared in a parent group are automatically visible to processors in nested
+     child groups — do not redeclare them, just reference with `@ServiceName`.
+   - Each group (root or nested) can independently set `"start": true|false`.
+   - **Scheduling** per processor: `"schedulingStrategy": "CRON_DRIVEN"` + a quartz `schedulingPeriod`
+     (`"0 0 2 * * ?"`) for clock-based runs, `concurrentTasks`, `"executionNode": "PRIMARY"`,
+     `runDurationMillis`, `penaltyDuration`, `yieldDuration`, `bulletinLevel`, `comments`. Strategy and
+     period must be set together — a CRON expression under the default TIMER_DRIVEN strategy is rejected.
+   - **Retry** per processor: `retryCount`, `retriedRelationships`, `backoffMechanism`, `maxBackoffPeriod`.
+   - **Queue tuning** per connection: `backPressureObjectThreshold`, `backPressureDataSizeThreshold`,
+     `flowFileExpiration`, `prioritizers` (short class name accepted), and `loadBalanceStrategy` /
+     `loadBalancePartitionAttribute` / `loadBalanceCompression` for clusters.
+   - **Port options**: `concurrentTasks`, `comments`, and `"allowRemoteAccess": true` for a public
+     site-to-site port.
+   - **Group settings**: `comments`, `flowFileConcurrency`, `flowFileOutboundPolicy`, and the
+     `defaultFlowFileExpiration` / `defaultBackPressure*` fields that seed the group's connections.
+   - **Parameter contexts**: declare `"parameterContexts"` at the top level, attach with
+     `"parameterContext": "<name>"` on a group, then reference values anywhere as `#{paramName}`.
+   - **Controller-scoped objects**: `"reportingTasks"` and `"controllerLevelServices"` at the top level.
+     Both are reused by name, never duplicated on redeploy.
+   - **Remote process groups**: `"remoteProcessGroups": [{"targetUris": ..., "transportProtocol": ...}]`
+     for site-to-site to another NiFi.
+   - **Replace instead of duplicate**: `"replaceExisting": true` stops a same-named group, disables its
+     services, drains its queues, and deletes it before rebuilding. Use it whenever the user asks to
+     update/rebuild an existing flow, so the canvas does not collect copies.
+   - **Auto-layout**: `x`/`y` on every positionable component (processors, ports, funnels, remote groups,
+     labels) is optional. When omitted, `flow_layout.apply_layout()` places nodes as a left-to-right
+     layered graph driven by the connection topology — ports left/right, fanouts stacked vertically —
+     which reads far better than the old horizontal strip. Set explicit `x`/`y` only when a specific
+     arrangement matters; add `"layout": "auto"` on a group to force a re-layout that ignores declared
+     coordinates, or `"layout": "manual"` to skip auto-layout entirely for that group.
+8. Always inspect NiFi version first (`nifi_catalog.load_catalog()`). Processor **types and NAR bundle versions** differ by NiFi release — use the catalog for every flow (not JSON→CSV only). `build_flow_from_spec` creates processors with the matching bundle and rejects types that are not installed.
+   - **Every** installed processor and controller service is available (359 processors and 123 services
+     on this 1.25.0 instance), not just the shortlist in `CORE_PROCESSORS`. Pick the component that
+     genuinely fits — database, SFTP, S3, Kafka, MQTT, Elasticsearch, scripting, record processors —
+     instead of forcing the job onto a common processor.
+   - The **short name** (`"type": "TailFile"`) is enough: the catalog resolves the full class name and
+     pins the NAR bundle. Use the full class name only to disambiguate a name shipped by two NARs.
+   - `flows/.nifi-catalog.json` carries `allProcessors` / `allControllerServices` with the exact type
+     and bundle for everything installed.
+   - Nothing about the target version is hardcoded: the version, the processor/service catalog, the
+     NAR bundles, and the supported tuning fields are all read from the live instance. Point `.env`
+     at a different NiFi and the same code adapts. The tuning fields in rule 7 are gated on what
+     that release reports it supports; unsupported ones are skipped and listed under `warnings` in
+     the deploy output rather than failing the build. Relay any warnings to the user.
+9. Properties: you may write either a property's **display name** (`"Jolt Specification"`) or its
+    internal name (`"jolt-record-spec"`), and either an allowable value's label (`"Shift"`) or its
+    value (`"jolt-transform-shift"`) — `build_flow_from_spec` normalizes both against the component's
+    live descriptors and drops keys the component does not declare, **reporting each drop as a
+    warning**. NiFi renames properties between releases (1.x `Jolt Transformation DSL` → 2.x
+    `Jolt Transform`); `_PROPERTY_ALIASES` maps the known ones so a spec deploys to either version.
+    If a warning says a property was ignored, check the live descriptors for a rename before
+    assuming the value took effect — a dropped *required* property leaves the processor invalid. Consequently, **user-defined
+   properties must go under `"dynamicProperties"`**, not `"properties"`, or they will be dropped —
+   e.g. the attributes `UpdateAttribute` sets: `"dynamicProperties": {"filename": "..."}`.
+10. File-based JSON→CSV: never use `GenerateFlowFile` with an embedded sample payload. An uploaded
+    file is for schema analysis only. Read with **GetFile** and write with **PutFile** (see
+    `json_to_csv.input_dir()` / `output_dir()`, overridable via `JSON_TO_CSV_INPUT_DIR` /
+    `JSON_TO_CSV_OUTPUT_DIR`). GetFile/PutFile paths are resolved by the NiFi process, not by this
+    repo, so when NiFi runs under WSL or in a container the two differ: `resolve_nifi_dirs()` asks
+    the instance which directories it can see (via GetFile's own validation) and substitutes the
+    `/mnt/<drive>/...` form automatically, or honours `JSON_TO_CSV_NIFI_INPUT_DIR` /
+    `JSON_TO_CSV_NIFI_OUTPUT_DIR` when set. Prefer **JoltTransformRecord** (Record Reader + Record Writer) over
+    `JoltTransformJSON`: it flattens per record, so it handles NDJSON as well as JSON arrays and
+    emits CSV in one processor. Give the CSV writer an explicit `Schema Text` — after Jolt the
+    output schema differs from the nested input schema, so it cannot inherit it.
+11. Column selection: the user picks which inferred fields to keep (all by default). Pass the chosen
+    names to `analyze_upload` / `build_from_upload` as `selected_columns` — `analyze_json` then builds
+    the Avro schema, both Jolt specs, and the sample payload from the surviving columns only. Never
+    filter after the fact by editing CSV output; a deselected field must be absent from the Jolt spec
+    and the writer schema so NiFi never produces the column.

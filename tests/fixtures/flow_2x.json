@@ -1,0 +1,58 @@
+{
+  "flowContents": {
+    "identifier": "c3d4e5f6-0000-1000-0000-000000000000",
+    "name": "modern-flow",
+    "comments": "NiFi 2.x flow definition",
+    "executionEngine": "STANDARD",
+    "statelessFlowTimeout": "1 min",
+    "processors": [
+      {
+        "identifier": "c3d4e5f6-0000-1000-0000-000000000001",
+        "name": "Read Input",
+        "type": "org.apache.nifi.processors.standard.GetFile",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-standard-nar",
+          "version": "2.11.0"
+        },
+        "schedulingStrategy": "TIMER_DRIVEN",
+        "schedulingPeriod": "10 sec",
+        "properties": {
+          "Input Directory": "/data/in"
+        },
+        "autoTerminatedRelationships": []
+      },
+      {
+        "identifier": "c3d4e5f6-0000-1000-0000-000000000002",
+        "name": "Reshape",
+        "type": "org.apache.nifi.processors.jolt.JoltTransformRecord",
+        "bundle": {
+          "group": "org.apache.nifi",
+          "artifact": "nifi-jolt-nar",
+          "version": "2.11.0"
+        },
+        "schedulingStrategy": "TIMER_DRIVEN",
+        "schedulingPeriod": "0 sec",
+        "properties": {
+          "Jolt Transform": "jolt-transform-shift"
+        },
+        "autoTerminatedRelationships": ["failure", "original"]
+      }
+    ],
+    "controllerServices": [],
+    "connections": [],
+    "inputPorts": [],
+    "outputPorts": [],
+    "funnels": [],
+    "processGroups": []
+  },
+  "parameterContexts": {
+    "app-config": {
+      "name": "app-config",
+      "parameters": [
+        { "name": "inputRoot", "value": "/data" },
+        { "name": "outputRoot", "value": "/out" }
+      ]
+    }
+  }
+}
