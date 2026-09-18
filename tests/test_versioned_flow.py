@@ -162,17 +162,32 @@ def test_selected_relationships_survive(xml_template_1x):
 
 def test_a_single_wrapped_group_is_promoted_to_the_root():
     """"Download template" on a group wraps it in a snippet; nesting that again
-    would bury the flow a level deeper than the author drew it."""
-    xml = """<template encoding-version="1.3"><name>outer</name><snippet>
+    would bury the flow a level deeper than the author drew it.
+
+    The template `<groupId>` is the parent canvas, not the group. Children must
+    keep pointing at the group's own id or NiFi opens a disconnected canvas.
+    """
+    xml = """<template encoding-version="1.3">
+      <groupId>parent-canvas</groupId><name>outer</name><snippet>
       <processGroups><id>g1</id><name>Real Flow</name><contents>
         <processors><id>p1</id><name>P</name><type>org.apache.nifi.X</type>
           <position><x>10</x><y>20</y></position></processors>
+        <connections><id>c1</id>
+          <source><id>p1</id><groupId>g1</groupId><type>PROCESSOR</type></source>
+          <destination><id>p1</id><groupId>g1</groupId><type>PROCESSOR</type></destination>
+          <selectedRelationships>success</selectedRelationships>
+        </connections>
       </contents></processGroups>
     </snippet></template>"""
     root = _migrate(xml)["flowContents"]
     assert root["name"] == "Real Flow"
+    assert root["identifier"] == "g1"
+    assert root["identifier"] != "parent-canvas"
     assert len(root["processors"]) == 1
     assert root["processGroups"] == []
+    assert root["processors"][0]["groupIdentifier"] == "g1"
+    assert root["connections"][0]["groupIdentifier"] == "g1"
+    assert root["connections"][0]["source"]["name"] == "P"
 
 
 def test_nested_groups_are_preserved_not_flattened():
@@ -219,10 +234,18 @@ def test_bundle_version_is_restamped_to_the_target(xml_template_1x):
         assert proc["bundle"]["version"] == "2.11.0"
 
 
-def test_components_are_imported_stopped(xml_template_1x):
-    """A migrated flow should not start moving production data on import."""
-    root = _migrate(xml_template_1x)["flowContents"]
-    assert all(p["scheduledState"] == "DISABLED" for p in root["processors"])
+def test_stopped_processors_are_enabled_not_disabled():
+    """NiFi does not auto-start an imported flow definition. Mapping STOPPED to
+    DISABLED greys out every processor and is not how the template was drawn."""
+    xml = """<template encoding-version="1.3"><name>t</name><snippet>
+      <processors><id>p1</id><name>P</name><type>org.apache.nifi.X</type>
+        <state>STOPPED</state></processors>
+      <processors><id>p2</id><name>Off</name><type>org.apache.nifi.Y</type>
+        <state>DISABLED</state></processors>
+    </snippet></template>"""
+    root = _migrate(xml)["flowContents"]
+    by_name = {p["name"]: p["scheduledState"] for p in root["processors"]}
+    assert by_name == {"P": "ENABLED", "Off": "DISABLED"}
 
 
 def test_unset_property_is_null_not_empty_string():
@@ -239,6 +262,40 @@ def test_unset_property_is_null_not_empty_string():
     props = _migrate(xml)["flowContents"]["processors"][0]["properties"]
     assert props["Set"] == "v"
     assert props["Unset"] is None
+
+
+def test_newline_only_property_value_is_preserved():
+    """MergeContent's demarcator is often a lone newline, serialized as
+    `<value>\\n</value>`. Pretty-printed empty values must not become that."""
+    xml = """<template encoding-version="1.3"><name>t</name><snippet>
+      <processors><id>p1</id><name>P</name><type>org.apache.nifi.X</type>
+        <config><properties>
+          <entry><key>Demarcator File</key><value>
+</value></entry>
+          <entry><key>Header File</key><value>
+                            </value></entry>
+        </properties></config>
+      </processors>
+    </snippet></template>"""
+    props = _migrate(xml)["flowContents"]["processors"][0]["properties"]
+    assert props["Demarcator File"] == "\n"
+    assert props["Header File"] is None
+
+
+def test_property_descriptors_are_copied_from_the_template():
+    xml = """<template encoding-version="1.3"><name>t</name><snippet>
+      <processors><id>p1</id><name>P</name><type>org.apache.nifi.X</type>
+        <config><descriptors>
+          <entry><key>Input Directory</key><value><name>Input Directory</name></value></entry>
+        </descriptors>
+        <properties><entry><key>Input Directory</key><value>/data</value></entry></properties>
+        </config>
+      </processors>
+    </snippet></template>"""
+    proc = _migrate(xml)["flowContents"]["processors"][0]
+    desc = proc["propertyDescriptors"]["Input Directory"]
+    assert desc["name"] == "Input Directory"
+    assert desc["displayName"] == "Input Directory"
 
 
 def test_writer_runs_without_a_migration_callback():

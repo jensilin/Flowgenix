@@ -60,13 +60,18 @@ def snapshot_from_xml_template(
     # case ("download template" on a group). Promote that group to the root so
     # the import does not nest the whole flow one level deeper than the author
     # drew it.
+    #
+    # Keep the group's own identifier. `<groupId>` on the template is the
+    # *parent canvas* the template was downloaded from — rewriting the root to
+    # that id leaves every child pointing at the original group, so NiFi opens
+    # an empty or disconnected canvas.
     groups = xml_children(snippet, "processGroups")
     lone_group = groups[0] if len(groups) == 1 and not _has_direct_components(snippet) else None
 
     if lone_group is not None:
-        contents = _group_to_versioned(lone_group, target_version, apply, root_id)
-        contents["identifier"] = root_id
-        contents["name"] = _text(lone_group, "name") or flow_name
+        contents = _group_to_versioned(lone_group, target_version, apply, "")
+        if not contents.get("name"):
+            contents["name"] = flow_name
     else:
         contents = _contents_to_versioned(snippet, target_version, apply, root_id, root_id)
         contents.update(
@@ -140,6 +145,9 @@ def _group_to_versioned(
             or "1 GB",
         }
     )
+    group_vars = _variables(group)
+    if group_vars:
+        node["variables"] = group_vars
     return node
 
 
@@ -181,6 +189,10 @@ def _contents_to_versioned(
         for g in xml_children(contents, "processGroups")
     ]
 
+    _fill_connectable_names(
+        connections, processors + services + funnels + input_ports + output_ports
+    )
+
     return {
         "processors": processors,
         "controllerServices": services,
@@ -191,7 +203,7 @@ def _contents_to_versioned(
         "labels": labels,
         "processGroups": child_groups,
         "remoteProcessGroups": [],
-        "variables": {},
+        "variables": _variables(contents),
     }
 
 
@@ -226,7 +238,7 @@ def _processor_to_versioned(
         "type": _text(proc, "type"),
         "bundle": _bundle(proc, target_version),
         "properties": properties,
-        "propertyDescriptors": {},
+        "propertyDescriptors": _property_descriptors(config),
         "style": _style(proc),
         "schedulingPeriod": _text(config, "schedulingPeriod") or "0 sec",
         "schedulingStrategy": _text(config, "schedulingStrategy") or "TIMER_DRIVEN",
@@ -247,9 +259,11 @@ def _processor_to_versioned(
         "componentType": "PROCESSOR",
         "groupIdentifier": group_id,
         "position": _position(proc),
-        # Import the flow stopped: a migrated flow should be reviewed before it
-        # starts moving production data.
-        "scheduledState": "DISABLED",
+        # Versioned snapshots have ENABLED/DISABLED only. STOPPED/RUNNING in a
+        # template means "allowed to run" — NiFi still imports the flow unstarted.
+        # Forcing DISABLED greys out every processor and is not how the canvas
+        # was drawn.
+        "scheduledState": _scheduled_state(_text(proc, "state")),
     }
 
 
@@ -262,12 +276,12 @@ def _service_to_versioned(svc: ET.Element, target_version: str, group_id: str) -
         "type": _text(svc, "type"),
         "bundle": _bundle(svc, target_version),
         "properties": _properties(svc),
-        "propertyDescriptors": {},
+        "propertyDescriptors": _property_descriptors(svc),
         "controllerServiceApis": [],
         "componentType": "CONTROLLER_SERVICE",
         "groupIdentifier": group_id,
         "position": _position(svc),
-        "scheduledState": "DISABLED",
+        "scheduledState": _scheduled_state(_text(svc, "state")),
         "bulletinLevel": _text(svc, "bulletinLevel") or "WARN",
     }
 
@@ -329,7 +343,7 @@ def _port_to_versioned(port: ET.Element, group_id: str, port_type: str) -> dict[
         "componentType": port_type,
         "groupIdentifier": group_id,
         "position": _position(port),
-        "scheduledState": "DISABLED",
+        "scheduledState": _scheduled_state(_text(port, "state")),
     }
 
 
@@ -382,9 +396,105 @@ def _properties(node: ET.Element | None) -> dict[str, Any]:
         key = _text(entry, "key")
         if not key:
             continue
-        value_node = entry.find("value")
-        out[key] = value_node.text if value_node is not None and value_node.text is not None else None
+        out[key] = _property_value(entry.find("value"))
     return out
+
+
+def _property_value(value_node: ET.Element | None) -> Any:
+    if value_node is None:
+        return None
+    raw = value_node.text
+    if raw is None:
+        return None
+    if raw.strip() == "":
+        # A lone newline is a real MergeContent demarcator. Indented pretty-print
+        # of an empty value is not.
+        if raw in ("\n", "\r\n", "\r"):
+            return "\n"
+        return None
+    return raw
+
+
+def _property_descriptors(node: ET.Element | None) -> dict[str, Any]:
+    """Copy template `<descriptors>` into the VersionedPropertyDescriptor map."""
+    out: dict[str, Any] = {}
+    if node is None:
+        return out
+    descriptors = node.find("descriptors")
+    if descriptors is None:
+        return out
+    for entry in descriptors.findall("entry"):
+        key = _text(entry, "key")
+        value = entry.find("value")
+        if not key:
+            continue
+        name = _text(value, "name") if value is not None else key
+        cs = _text(value, "identifiesControllerService") if value is not None else ""
+        if cs.lower() in ("", "false"):
+            identifies: Any = False
+        elif cs.lower() == "true":
+            identifies = True
+        else:
+            identifies = cs
+        desc: dict[str, Any] = {
+            "name": name or key,
+            "displayName": name or key,
+            "identifiesControllerService": identifies,
+            "sensitive": _text(value, "sensitive").lower() == "true" if value is not None else False,
+            "dynamic": _text(value, "dynamic").lower() == "true" if value is not None else False,
+        }
+        deps = []
+        if value is not None:
+            for dep in value.findall("dependencies"):
+                prop_name = _text(dep, "propertyName")
+                values = [v.text for v in dep.findall("dependentValues") if v.text]
+                if prop_name:
+                    deps.append({"propertyName": prop_name, "dependentValues": values})
+        if deps:
+            desc["dependencies"] = deps
+        out[key] = desc
+    return out
+
+
+def _variables(node: ET.Element | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if node is None:
+        return out
+    for var in xml_children(node, "variables"):
+        name = _text(var, "name")
+        if name:
+            out[name] = _text(var, "value")
+    return out
+
+
+def _fill_connectable_names(connections: list[dict[str, Any]], components: list[dict[str, Any]]) -> None:
+    names = {
+        str(node.get("identifier")): str(node.get("name") or "")
+        for node in components
+        if node.get("identifier")
+    }
+    for conn in connections:
+        for end in ("source", "destination"):
+            endpoint = conn.get(end)
+            if not isinstance(endpoint, dict):
+                continue
+            if not endpoint.get("name"):
+                endpoint["name"] = names.get(str(endpoint.get("id") or ""), "")
+
+
+def _scheduled_state(raw: str) -> str:
+    """Map template `<state>` onto a VersionedComponent scheduledState."""
+    state = (raw or "").strip().upper()
+    if state == "DISABLED":
+        return "DISABLED"
+    return "ENABLED"
+
+
+def _xml_state(scheduled_state: Any) -> str:
+    state = str(scheduled_state or "").strip().upper()
+    if state == "DISABLED":
+        return "DISABLED"
+    return "STOPPED"
 
 
 def _bundle(node: ET.Element, target_version: str) -> dict[str, str]:
@@ -530,6 +640,7 @@ def _processor_to_xml(proc: dict[str, Any], target_version: str) -> ET.Element:
         rel_el = ET.SubElement(node, "relationships")
         _set_text(rel_el, "name", str(rel.get("name") or ""))
         _set_text(rel_el, "autoTerminate", "true" if rel.get("autoTerminate") else "false")
+    _set_text(node, "state", _xml_state(proc.get("scheduledState")))
     return node
 
 
