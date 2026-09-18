@@ -2,20 +2,31 @@
 
 Everything version-related for the migration feature reads from here, so adding
 support for a new NiFi release is a one-line edit to `SUPPORTED_VERSIONS` plus
-(optionally) rules in `migration_rules.py`.
+(optionally) rules in `migration_rules.py` and dialect notes in `flow_schema.py`.
 
-Deliberately separate from `nifi_catalog.py`: the catalog describes a *live*
-instance we can interrogate over REST, whereas this registry describes releases
-we may have to reason about *offline* — the user migrating a 1.19 flow to 2.11
-usually has neither instance running.
+This registry describes releases we reason about *offline* — the user migrating
+a 1.19 flow to 2.6 usually has neither instance running.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from nifi_catalog import parse_version
+
+def parse_version(version: str) -> tuple[int, int, int]:
+    """Split a NiFi version string into (major, minor, patch)."""
+    parts: list[int] = []
+    for token in (version or "0").split("."):
+        digits = "".join(ch for ch in token if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return parts[0], parts[1], parts[2]
+
+
+def version_at_least(version: str, major: int, minor: int = 0, patch: int = 0) -> bool:
+    return parse_version(version) >= (major, minor, patch)
 
 
 @dataclass(frozen=True)
@@ -31,7 +42,6 @@ class NiFiVersion:
     version: str
     line: str  # "1.x" or "2.x"
     label: str = ""
-    # Traits that migration rules gate on.
     supports_templates: bool = True  # XML templates; removed in 2.0
     supports_variable_registry: bool = True  # Variables; removed in 2.0
     supports_event_driven: bool = True  # EVENT_DRIVEN scheduling; removed in 2.0
@@ -63,6 +73,30 @@ class NiFiVersion:
         }
 
 
+def _v1(version: str, label: str = "", notes: str = "") -> NiFiVersion:
+    return NiFiVersion(
+        version=version,
+        line="1.x",
+        label=label or version,
+        minimum_java=8,
+        notes=notes,
+    )
+
+
+def _v2(version: str, label: str = "", notes: str = "") -> NiFiVersion:
+    return NiFiVersion(
+        version=version,
+        line="2.x",
+        label=label or version,
+        supports_templates=False,
+        supports_variable_registry=False,
+        supports_event_driven=False,
+        supports_stateless=True,
+        minimum_java=21,
+        notes=notes,
+    )
+
+
 # --- The registry -------------------------------------------------------------
 #
 # To add a NiFi release: append one entry here. Keep it ordered oldest → newest.
@@ -70,92 +104,40 @@ class NiFiVersion:
 #   * NiFi 2.0 removed XML templates, the Variable Registry, and EVENT_DRIVEN
 #     scheduling, and requires Java 21.
 #   * Parameter Contexts arrived in 1.10.
+#   * JSON flow-definition fields diverge at 2.6 (see flow_schema.py).
 SUPPORTED_VERSIONS: tuple[NiFiVersion, ...] = (
-    NiFiVersion(
-        version="1.16.3",
-        line="1.x",
-        label="1.16.3",
-        supports_parameter_contexts=True,
-        minimum_java=8,
-    ),
-    NiFiVersion(
-        version="1.19.1",
-        line="1.x",
-        label="1.19.1",
-        minimum_java=8,
-    ),
-    NiFiVersion(
-        version="1.21.0",
-        line="1.x",
-        label="1.21.0",
-        minimum_java=8,
-    ),
-    NiFiVersion(
-        version="1.23.2",
-        line="1.x",
-        label="1.23.2",
-        minimum_java=8,
-    ),
-    NiFiVersion(
-        version="1.25.0",
-        line="1.x",
-        label="1.25.0",
-        minimum_java=8,
-    ),
-    NiFiVersion(
-        version="1.26.0",
-        line="1.x",
-        label="1.26.0",
-        minimum_java=8,
-    ),
-    NiFiVersion(
-        version="1.28.1",
-        line="1.x",
+    _v1("1.16.3"),
+    _v1("1.19.1"),
+    _v1("1.21.0"),
+    _v1("1.23.2"),
+    _v1("1.25.0"),
+    _v1("1.26.0"),
+    _v1(
+        "1.28.1",
         label="1.28.1 (final 1.x line)",
-        minimum_java=8,
         notes="Last 1.x feature release; the natural jump-off point for a 2.x migration.",
     ),
-    NiFiVersion(
-        version="2.0.0",
-        line="2.x",
-        label="2.0.0",
-        supports_templates=False,
-        supports_variable_registry=False,
-        supports_event_driven=False,
-        supports_stateless=True,
-        minimum_java=21,
+    _v2(
+        "2.0.0",
         notes="Templates, the Variable Registry, and EVENT_DRIVEN scheduling were removed. Requires Java 21.",
     ),
-    NiFiVersion(
-        version="2.1.0",
-        line="2.x",
-        label="2.1.0",
-        supports_templates=False,
-        supports_variable_registry=False,
-        supports_event_driven=False,
-        supports_stateless=True,
-        minimum_java=21,
+    _v2("2.1.0"),
+    _v2("2.2.0"),
+    _v2("2.3.0"),
+    _v2("2.4.0"),
+    _v2("2.5.0"),
+    _v2(
+        "2.6.0",
+        notes=(
+            "JSON flow-definition dialect split: fields added after 2.6 are stripped "
+            "when targeting 2.6, and filled with defaults when targeting a later 2.x."
+        ),
     ),
-    NiFiVersion(
-        version="2.2.0",
-        line="2.x",
-        label="2.2.0",
-        supports_templates=False,
-        supports_variable_registry=False,
-        supports_event_driven=False,
-        supports_stateless=True,
-        minimum_java=21,
-    ),
-    NiFiVersion(
-        version="2.11.0",
-        line="2.x",
-        label="2.11.0",
-        supports_templates=False,
-        supports_variable_registry=False,
-        supports_event_driven=False,
-        supports_stateless=True,
-        minimum_java=21,
-    ),
+    _v2("2.7.0"),
+    _v2("2.8.0"),
+    _v2("2.9.0"),
+    _v2("2.10.0"),
+    _v2("2.11.0"),
 )
 
 _BY_VERSION: dict[str, NiFiVersion] = {v.version: v for v in SUPPORTED_VERSIONS}

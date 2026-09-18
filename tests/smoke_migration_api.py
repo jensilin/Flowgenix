@@ -1,7 +1,7 @@
 """Manual end-to-end check of the migration HTTP endpoints against a running server.
 
-Not part of the pytest suite (no `test_` prefix): it needs a live Flow Studio on
-FLOW_STUDIO_PORT. Run it after starting the server to confirm the wiring between
+Not part of the pytest suite (no `test_` prefix): it needs a live Flowgenix on
+FLOWGENIX_PORT. Run it after starting the server to confirm the wiring between
 the browser, the endpoints, and the engine.
 
     python tests/smoke_migration_api.py
@@ -15,7 +15,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-BASE = f"http://127.0.0.1:{os.getenv('FLOW_STUDIO_PORT', '7871')}"
+BASE = f"http://127.0.0.1:{os.getenv('FLOWGENIX_PORT') or os.getenv('FLOW_STUDIO_PORT', '7860')}"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
@@ -111,7 +111,6 @@ def main() -> int:
             "source_filename": "legacy.xml",
             "source_version": "1.25.0",
             "target_version": "2.11.0",
-            "use_ai": False,
         },
     )
     events = sse_events(body) if status == 200 else []
@@ -128,7 +127,7 @@ def main() -> int:
     # 7. Missing source version is refused, not guessed
     status, body = post(
         "/api/migration/analyze",
-        {"source_text": ambiguous, "source_filename": "x.json", "target_version": "2.11.0", "use_ai": False},
+        {"source_text": ambiguous, "source_filename": "x.json", "target_version": "2.11.0"},
     )
     events = sse_events(body)
     err = next((e for e in events if e.get("type") == "error"), None)
@@ -142,7 +141,6 @@ def main() -> int:
             "source_filename": "legacy.xml",
             "source_version": "1.25.0",
             "target_version": "2.11.0",
-            "use_ai": False,
         },
     )
     events = sse_events(body) if status == 200 else []
@@ -172,11 +170,36 @@ def main() -> int:
         fetch = next(p for p in procs if p["name"] == "Fetch Feed")
         check("removed processor left unchanged", fetch["type"].endswith("GetHTTP"))
         check("removed processor marked in output", "MANUAL REVIEW REQUIRED" in fetch.get("comments", ""))
-        check("provenance stamped", flow.get("flowStudioMigration", {}).get("targetVersion") == "2.11.0")
+        check("provenance stamped", "Flowgenix migration" in flow["flowContents"].get("comments", ""))
 
         status, md = get(artifacts["reportMarkdown"]["downloadUrl"])
         check("report names both versions", "1.25.0" in md and "2.11.0" in md)
         check("report has a manual-review section", "## Manual intervention required" in md)
+
+    # 8b. Same-version XML output on a 1.x target
+    status, body = post(
+        "/api/migration/generate",
+        {
+            "source_text": xml_text,
+            "source_filename": "legacy.xml",
+            "source_version": "1.25.0",
+            "target_version": "1.25.0",
+            "output_format": "xml_template",
+        },
+    )
+    events = sse_events(body) if status == 200 else []
+    generated_xml = next((e for e in events if e.get("type") == "generated"), None)
+    check("generate XML for 1.x target", generated_xml is not None, f"{len(events)} events")
+    if generated_xml:
+        xml_art = generated_xml["artifacts"].get("migratedXml") or generated_xml["artifacts"].get("migratedFlow")
+        check("XML artifact is present", xml_art is not None, str(list(generated_xml["artifacts"])))
+        if xml_art:
+            status, xml_out = get(xml_art["downloadUrl"])
+            check(
+                "download migrated XML",
+                status == 200 and "<template" in xml_out and "encoding-version" in xml_out,
+                f"{status} {len(xml_out)} bytes",
+            )
 
     # 9. Path traversal on the artifact download is refused
     status, _ = get("/api/migration/download?name=../pytest.ini")
@@ -184,11 +207,9 @@ def main() -> int:
     status, _ = get("/api/migration/download?name=nope.json")
     check("missing artifact 404s", status == 404, str(status))
 
-    # 10. Existing endpoints still respond
-    status, _ = get("/api/flows")
-    check("existing /api/flows still works", status == 200)
+    # 10. Index still responds
     status, _ = get("/")
-    check("existing index still works", status == 200)
+    check("index still works", status == 200)
 
     print()
     if failures:

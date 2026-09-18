@@ -1,23 +1,21 @@
 """Analyse a parsed flow against a target NiFi version, and generate a migrated copy.
 
-Compatibility is decided by a strict precedence, so the answer is reproducible
-and never depends on a language model's mood:
+Compatibility is decided offline and never depends on a language model's mood:
 
-    1. **Live catalog** at the target version, when the caller supplies one.
-       If the target instance reports the processor type as installed, it is
-       installed; if it does not, it is not. Nothing overrides this.
-    2. **Curated rules** in `migration_rules.py` — known renames, removals,
+    1. **Curated rules** in `migration_rules.py` — known renames, removals,
        replacements, and property changes, each carrying an explanation.
-    3. **Structural checks** — EVENT_DRIVEN on a 2.x target, `${var}` references
+    2. **Structural checks** — EVENT_DRIVEN on a 2.x target, `${var}` references
        when the Variable Registry is gone, and so on.
-    4. Anything still unresolved is reported as `unknown` and flagged for review.
-       `migration_ai` can then annotate those entries, but its output is labelled
-       as a suggestion and never silently applied to the generated flow.
+    3. Anything still unresolved is reported as `unknown` and flagged for review.
 
 The generator honours that last point literally: a component whose outcome needs
 review is copied through **unchanged** and marked, rather than being rewritten on
 a guess. The uploaded file itself is never mutated — generation always works on a
 deep copy.
+
+Output format is a user choice constrained by the target line: XML templates are
+only emitted for 1.x targets. JSON is restamped to the target dialect (2.6 vs
+later 2.x field sets differ).
 """
 
 from __future__ import annotations
@@ -31,11 +29,11 @@ from typing import Any
 
 from flow_document import (
     FORMAT_JSON_SNAPSHOT,
-    FORMAT_STUDIO_SPEC,
     FORMAT_XML_TEMPLATE,
     Component,
     FlowDocument,
 )
+from flow_schema import apply_json_dialect
 from migration_rules import (
     COMPATIBLE,
     CONFIG_CHANGE,
@@ -52,8 +50,7 @@ from migration_rules import (
     property_rules_for,
     service_rule_for,
 )
-from nifi_catalog import parse_version
-from nifi_versions import get_version, is_downgrade, is_major_upgrade, resolve_or_raise
+from nifi_versions import get_version, is_downgrade, resolve_or_raise
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +89,7 @@ class ComponentFinding:
     #: mechanical rewrite (removed, or a rule that says the change is semantic)
     #: blocks generation.
     block_auto_migration: bool = False
-    decided_by: str = "rules"  # catalog | rules | structural | ai | default
+    decided_by: str = "rules"  # rules | structural | default
     ai_suggestion: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -186,13 +183,8 @@ def analyze_migration(
     doc: FlowDocument,
     source_version: str,
     target_version: str,
-    target_catalog: Any | None = None,
 ) -> MigrationAnalysis:
-    """Classify every component in `doc` against `target_version`.
-
-    `target_catalog` is an optional live `NiFiCatalog` whose version matches the
-    target; when present it is treated as ground truth for type availability.
-    """
+    """Classify every component in `doc` against `target_version`."""
     source = resolve_or_raise(source_version, "source")
     target = resolve_or_raise(target_version, "target")
 
@@ -204,10 +196,6 @@ def analyze_migration(
         document_summary=doc.summary(),
     )
 
-    catalog_usable = _catalog_matches_target(target_catalog, target.version, analysis)
-    if catalog_usable:
-        analysis.catalog_version = getattr(target_catalog, "version", None)
-
     if is_downgrade(source.version, target.version):
         analysis.warnings.append(
             f"Target {target.version} is older than source {source.version}. Downgrades are "
@@ -217,13 +205,9 @@ def analyze_migration(
 
     for comp in doc.components:
         if comp.kind == "processor":
-            analysis.findings.append(
-                _analyze_processor(comp, source, target, target_catalog if catalog_usable else None)
-            )
+            analysis.findings.append(_analyze_processor(comp, source, target))
         elif comp.kind == "controllerService":
-            analysis.findings.append(
-                _analyze_service(comp, source, target, target_catalog if catalog_usable else None)
-            )
+            analysis.findings.append(_analyze_service(comp, source, target))
         else:
             # Ports, funnels, connections, labels, RPGs carry no type that can be
             # removed between releases; they migrate structurally.
@@ -257,28 +241,10 @@ def analyze_migration(
     return analysis
 
 
-def _catalog_matches_target(catalog: Any, target_version: str, analysis: MigrationAnalysis) -> bool:
-    """Only trust a live catalog when it really is the target release."""
-    if catalog is None:
-        return False
-    version = getattr(catalog, "version", None)
-    if not version:
-        return False
-    if parse_version(version)[:2] != parse_version(target_version)[:2]:
-        analysis.warnings.append(
-            f"Connected NiFi is {version} but the migration target is {target_version}; "
-            "the live catalog was ignored and the analysis used the built-in rule base only. "
-            "Point Flow Studio at a NiFi running the target version for the most accurate result."
-        )
-        return False
-    return True
-
-
 def _analyze_processor(
     comp: Component,
     source: Any,
     target: Any,
-    catalog: Any | None,
 ) -> ComponentFinding:
     finding = ComponentFinding(
         identifier=comp.identifier,
@@ -290,18 +256,12 @@ def _analyze_processor(
     )
 
     rule = processor_rule_for(comp.type_name, target.version)
-    installed: bool | None = None
-    if catalog is not None:
-        installed = catalog.has_processor(comp.type_name)
 
-    # 1. Curated rule wins for *explanation*; the catalog wins for *existence*.
     if rule is not None:
         finding.outcome = rule.outcome
         finding.explanation = rule.explanation
         finding.target_type = rule.replacement
         finding.manual_review = rule.manual_review
-        # A rule flagged for review, or one with no valid target at all, means
-        # there is no mechanical rewrite to trust.
         finding.block_auto_migration = rule.manual_review or rule.outcome == REMOVED
         finding.decided_by = "rules"
         finding.new_required_properties = list(rule.new_required_properties)
@@ -313,41 +273,15 @@ def _analyze_processor(
                 finding.property_changes.append(
                     {"property": old, "from": old, "to": new, "reason": "renamed in target version"}
                 )
-    elif installed is False:
-        # Catalog is authoritative: the type genuinely is not on the target.
-        finding.outcome = REMOVED
-        finding.manual_review = True
-        finding.block_auto_migration = True
-        finding.decided_by = "catalog"
-        finding.explanation = (
-            f"{comp.short_type} is not installed on the connected NiFi {getattr(catalog, 'version', target.version)}. "
-            "It was either removed in this release or ships in a NAR that is not deployed."
-        )
-        finding.recommendation = (
-            "Confirm whether the NAR is simply missing (install it) or the processor was "
-            "removed (pick a replacement)."
-        )
-    elif installed is True:
-        finding.outcome = COMPATIBLE
-        finding.decided_by = "catalog"
-        finding.explanation = (
-            f"{comp.short_type} is installed on the connected NiFi "
-            f"{getattr(catalog, 'version', target.version)}."
-        )
     else:
-        # No catalog and no rule: honest "not verified" rather than a false pass.
-        # This neither blocks generation nor counts as manual review — it gets its
-        # own "not verified" section in the report.
         finding.outcome = UNKNOWN
         finding.decided_by = "default"
         finding.explanation = (
-            f"No migration rule covers {comp.short_type}, and no NiFi at the target version "
-            "was connected to confirm it is installed. It is most likely unchanged, but this "
-            "has not been verified."
+            f"No migration rule covers {comp.short_type}. It is most likely unchanged "
+            f"on NiFi {target.version}, but this has not been verified."
         )
         finding.recommendation = (
-            f"Confirm {comp.short_type} exists on NiFi {target.version}, or connect Flow Studio "
-            "to a target-version instance and re-run the analysis."
+            f"Confirm {comp.short_type} exists on NiFi {target.version} before starting the flow."
         )
 
     # 2. Property renames apply on top of whatever the type-level verdict was.
@@ -389,8 +323,7 @@ def _analyze_processor(
         )
         finding.explanation = (
             f"Requires known changes for NiFi {target.version}: {changes}. The migrated flow "
-            f"applies them. Note that {comp.short_type} itself was not verified against a live "
-            "target instance."
+            f"applies them. Note that {comp.short_type} itself was not verified by a curated rule."
         )
         finding.recommendation = (
             f"The changes above are applied automatically. Separately, confirm {comp.short_type} "
@@ -410,7 +343,6 @@ def _analyze_service(
     comp: Component,
     source: Any,
     target: Any,
-    catalog: Any | None,
 ) -> ComponentFinding:
     finding = ComponentFinding(
         identifier=comp.identifier,
@@ -422,7 +354,6 @@ def _analyze_service(
     )
 
     rule = service_rule_for(comp.type_name, target.version)
-    installed = catalog.has_service(comp.type_name) if catalog is not None else None
 
     if rule is not None:
         finding.outcome = rule.outcome
@@ -431,25 +362,12 @@ def _analyze_service(
         finding.manual_review = rule.manual_review
         finding.block_auto_migration = rule.manual_review or rule.outcome == REMOVED
         finding.decided_by = "rules"
-    elif installed is False:
-        finding.outcome = REMOVED
-        finding.manual_review = True
-        finding.block_auto_migration = True
-        finding.decided_by = "catalog"
-        finding.explanation = (
-            f"Controller service {comp.short_type} is not installed on the connected NiFi "
-            f"{getattr(catalog, 'version', target.version)}."
-        )
-    elif installed is True:
-        finding.outcome = COMPATIBLE
-        finding.decided_by = "catalog"
-        finding.explanation = f"{comp.short_type} is installed on the connected target NiFi."
     else:
         finding.outcome = UNKNOWN
         finding.decided_by = "default"
         finding.explanation = (
-            f"No rule covers controller service {comp.short_type} and no target-version NiFi "
-            "was connected to confirm availability."
+            f"No rule covers controller service {comp.short_type}. Confirm it exists on "
+            f"NiFi {target.version}."
         )
 
     for prop_rule in property_rules_for(comp.type_name, target.version):
@@ -522,9 +440,11 @@ class MigrationResult:
 
     migrated: Any
     output_format: str
+    xml_text: str = ""
     applied_changes: list[dict[str, Any]] = field(default_factory=list)
     skipped: list[dict[str, Any]] = field(default_factory=list)
     manual_markers: list[dict[str, Any]] = field(default_factory=list)
+    dialect_notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -532,33 +452,65 @@ class MigrationResult:
             "appliedChanges": self.applied_changes,
             "skipped": self.skipped,
             "manualMarkers": self.manual_markers,
+            "dialectNotes": self.dialect_notes,
             "appliedCount": len(self.applied_changes),
             "skippedCount": len(self.skipped),
             "manualCount": len(self.manual_markers),
+            "hasXml": bool(self.xml_text),
         }
 
 
 def generate_migrated_flow(
     doc: FlowDocument,
     analysis: MigrationAnalysis,
+    output_format: str = FORMAT_JSON_SNAPSHOT,
 ) -> MigrationResult:
     """Produce a migrated copy of the flow.
 
     Rules of engagement:
       * The uploaded document is never mutated — everything happens on a deep copy.
-      * Only changes backed by the catalog or the curated rule base are applied.
-      * A component needing review is copied through **unchanged** and annotated
-        so it is impossible to mistake it for something the tool fixed.
-      * XML templates cannot target 2.x (templates were removed), so those are
-        converted to a JSON flow definition.
+      * Only changes backed by the curated rule base are applied.
+      * A component needing review is copied through **unchanged** and annotated.
+      * XML templates cannot target 2.x (templates were removed).
+      * JSON is restamped to the target dialect after mechanical rewrites.
     """
+    requested = (output_format or FORMAT_JSON_SNAPSHOT).strip()
+    if requested not in {FORMAT_JSON_SNAPSHOT, FORMAT_XML_TEMPLATE}:
+        raise ValueError(
+            f"Unsupported output format {requested!r}. Use {FORMAT_JSON_SNAPSHOT} or {FORMAT_XML_TEMPLATE}."
+        )
+
+    target = get_version(analysis.target_version)
+    if requested == FORMAT_XML_TEMPLATE and target is not None and not target.supports_templates:
+        raise ValueError(
+            f"NiFi {analysis.target_version} cannot import XML templates "
+            "(removed in 2.0). Choose JSON output or a 1.x target."
+        )
+
     by_id = {f.identifier: f for f in analysis.findings}
 
     if doc.source_format == FORMAT_XML_TEMPLATE:
-        return _generate_from_xml(doc, analysis, by_id)
-    if doc.source_format == FORMAT_STUDIO_SPEC:
-        return _generate_studio_spec(doc, analysis, by_id)
-    return _generate_from_json(doc, analysis, by_id)
+        result = _generate_from_xml(doc, analysis, by_id)
+    else:
+        result = _generate_from_json(doc, analysis, by_id)
+
+    if isinstance(result.migrated, dict):
+        _stamp_provenance(result.migrated, analysis)
+        result.dialect_notes = apply_json_dialect(result.migrated, analysis.target_version)
+        for note in result.dialect_notes:
+            if note not in analysis.warnings:
+                analysis.warnings.append(note)
+
+    if requested == FORMAT_XML_TEMPLATE:
+        from versioned_flow import template_from_snapshot
+
+        result.xml_text = template_from_snapshot(
+            result.migrated, analysis.target_version
+        )
+        result.output_format = FORMAT_XML_TEMPLATE
+    else:
+        result.output_format = FORMAT_JSON_SNAPSHOT
+    return result
 
 
 def _generate_from_json(
@@ -603,7 +555,6 @@ def _generate_from_json(
     if isinstance(root, dict):
         visit(root)
 
-    _stamp_provenance(migrated, analysis)
     return result
 
 
@@ -764,7 +715,7 @@ def _generate_from_xml(
         apply=apply,
         comments=(
             f"Migrated from a NiFi {analysis.source_version} XML template to a NiFi "
-            f"{analysis.target_version} flow definition by Flow Studio "
+            f"{analysis.target_version} flow definition by Flowgenix "
             f"(source file: {analysis.filename}). NiFi 2.x cannot import XML templates, so "
             "the template's contents were converted to this flow definition. Components are "
             "imported stopped — review them before starting the flow."
@@ -791,109 +742,18 @@ def _generate_from_xml(
     return result
 
 
-def _apply_finding_to_plain(
-    node: dict[str, Any],
-    finding: ComponentFinding | None,
-    result: MigrationResult,
-    target: Any,
-) -> None:
-    if finding is None:
-        return
-    label = node.get("name") or finding.name
-    if finding.block_auto_migration:
-        result.manual_markers.append(
-            {
-                "component": label,
-                "identifier": finding.identifier,
-                "outcome": finding.outcome,
-                "sourceType": finding.source_type,
-                "suggestedType": finding.target_type,
-                "reason": finding.explanation,
-                "recommendation": finding.recommendation,
-            }
-        )
-        node["comments"] = (
-            f"[MANUAL REVIEW REQUIRED — {finding.outcome}] {finding.explanation} "
-            f"{finding.recommendation}"
-        ).strip()
-        result.skipped.append(
-            {
-                "component": label,
-                "reason": "needs manual review; left unchanged deliberately",
-                "outcome": finding.outcome,
-            }
-        )
-        return
-
-    if finding.outcome == UNKNOWN:
-        node["comments"] = f"[NOT VERIFIED] {finding.explanation}".strip()
-
-    if finding.target_type and finding.outcome in (RENAMED, REPLACED):
-        old = node.get("type")
-        node["type"] = finding.target_type
-        result.applied_changes.append(
-            {"component": label, "change": "type", "from": old, "to": finding.target_type,
-             "reason": finding.explanation}
-        )
-
-    props = node.get("properties") or {}
-    for change in finding.property_changes:
-        old, new = change.get("from"), change.get("to")
-        if change.get("property") == "schedulingStrategy":
-            node["schedulingStrategy"] = new
-            result.applied_changes.append(
-                {"component": label, "change": "schedulingStrategy", "from": old, "to": new,
-                 "reason": change.get("reason", "")}
-            )
-            continue
-        if old in props and new and new != "(removed)":
-            props[new] = props.pop(old)
-            result.applied_changes.append(
-                {"component": label, "change": "property", "from": old, "to": new,
-                 "reason": change.get("reason", "")}
-            )
-
-
-def _generate_studio_spec(
-    doc: FlowDocument, analysis: MigrationAnalysis, by_id: dict[str, ComponentFinding]
-) -> MigrationResult:
-    """Migrate this application's own spec format, keeping it in that format."""
-    migrated = copy.deepcopy(doc.original)
-    result = MigrationResult(migrated=migrated, output_format=FORMAT_STUDIO_SPEC)
-    target = get_version(analysis.target_version)
-
-    def visit(group: dict[str, Any]) -> None:
-        for proc in group.get("processors") or []:
-            finding = by_id.get(str(proc.get("name") or ""))
-            _apply_finding_to_plain(proc, finding, result, target)
-        for svc in group.get("controllerServices") or []:
-            finding = by_id.get(str(svc.get("name") or ""))
-            _apply_finding_to_plain(svc, finding, result, target)
-        for child in group.get("processGroups") or []:
-            visit(child)
-
-    visit(migrated)
-    if target is not None:
-        migrated["nifiVersion"] = target.version
-    _stamp_provenance(migrated, analysis)
-    return result
-
-
 def _stamp_provenance(migrated: Any, analysis: MigrationAnalysis) -> None:
     """Record where the migrated artifact came from, inside the artifact itself.
 
     Written into the root group's `comments` rather than as a top-level key.
     NiFi deserializes a flow definition into its `VersionedFlowSnapshot` model
-    and rejects the entire file when it meets a field it does not recognise, so
-    an extra metadata key — however harmless it looks — makes the flow
-    unimportable. The provenance also belongs where an operator will actually
-    see it: on the group, in the NiFi UI.
+    and rejects the entire file when it meets a field it does not recognise.
     """
     if not isinstance(migrated, dict):
         return
 
     note = (
-        f"[Flow Studio migration] NiFi {analysis.source_version} → {analysis.target_version}, "
+        f"[Flowgenix migration] NiFi {analysis.source_version} → {analysis.target_version}, "
         f"from {analysis.filename} ({analysis.source_format})."
     )
     root = None
@@ -902,15 +762,6 @@ def _stamp_provenance(migrated: Any, analysis: MigrationAnalysis) -> None:
             root = migrated[key]
             break
     if root is None:
-        # This application's own spec format: a metadata key is safe here,
-        # because the spec is only ever read back by this codebase.
-        migrated["flowStudioMigration"] = {
-            "sourceVersion": analysis.source_version,
-            "targetVersion": analysis.target_version,
-            "sourceFile": analysis.filename,
-            "sourceFormat": analysis.source_format,
-            "generatedBy": "Flow Studio migration engine",
-        }
         return
 
     existing = str(root.get("comments") or "")
@@ -919,3 +770,211 @@ def _stamp_provenance(migrated: Any, analysis: MigrationAnalysis) -> None:
 
 def migrated_json_text(result: MigrationResult) -> str:
     return json.dumps(result.migrated, indent=2, ensure_ascii=False)
+
+
+def migrated_xml_text(result: MigrationResult) -> str:
+    return result.xml_text
+
+
+def build_report(
+    analysis: MigrationAnalysis,
+    generation: Any | None = None,
+) -> dict[str, Any]:
+    """The machine-readable Migration Report (downloaded as JSON)."""
+    summary = analysis.summary()
+    report: dict[str, Any] = {
+        "report": "NiFi Migration Report",
+        "generatedBy": "Flowgenix",
+        "sourceVersion": analysis.source_version,
+        "targetVersion": analysis.target_version,
+        "sourceFile": analysis.filename,
+        "sourceFormat": analysis.source_format,
+        "summary": summary,
+        "components": {
+            "compatible": [f.to_dict() for f in analysis.findings if f.outcome == "compatible"],
+            "configChanges": [
+                f.to_dict() for f in analysis.findings if f.outcome == "config_change"
+            ],
+            "replaced": [
+                f.to_dict() for f in analysis.findings if f.outcome in ("replaced", "renamed")
+            ],
+            "deprecated": [f.to_dict() for f in analysis.findings if f.outcome == "deprecated"],
+            "removed": [f.to_dict() for f in analysis.findings if f.outcome == "removed"],
+            "unverified": [f.to_dict() for f in analysis.findings if f.outcome == "unknown"],
+        },
+        "propertyChanges": [
+            {
+                "component": f.name,
+                "sourceType": f.source_type,
+                "changes": f.property_changes,
+            }
+            for f in analysis.findings
+            if f.property_changes
+        ],
+        "manualInterventionRequired": [f.to_dict() for f in analysis.findings_needing_review()],
+        "flowLevelConcerns": analysis.concerns,
+        "warnings": analysis.warnings,
+        "errors": analysis.errors,
+    }
+    if generation is not None:
+        report["generation"] = generation.to_dict() if hasattr(generation, "to_dict") else generation
+    return report
+
+
+def render_report_markdown(report: dict[str, Any]) -> str:
+    """Human-readable Migration Report."""
+    s = report.get("summary") or {}
+    lines: list[str] = [
+        "# NiFi Migration Report",
+        "",
+        f"- **Source version:** {report.get('sourceVersion')}",
+        f"- **Target version:** {report.get('targetVersion')}",
+        f"- **Source file:** `{report.get('sourceFile')}`",
+        f"- **File format:** {report.get('sourceFormat')}",
+        "",
+        "## Summary",
+        "",
+        "| Metric | Count |",
+        "| --- | --- |",
+        f"| Components analysed | {s.get('totalComponents', 0)} |",
+        f"| Compatible | {s.get('compatible', 0)} |",
+        f"| Require configuration changes | {s.get('configChanges', 0)} |",
+        f"| Replaced / renamed | {s.get('replaced', 0)} |",
+        f"| Deprecated | {s.get('deprecated', 0)} |",
+        f"| Removed / unsupported | {s.get('removed', 0)} |",
+        f"| Not verified | {s.get('unknown', 0)} |",
+        f"| **Manual review required** | **{s.get('manualReview', 0)}** |",
+        "",
+    ]
+
+    concerns = report.get("flowLevelConcerns") or []
+    if concerns:
+        lines += ["## Flow-level concerns", ""]
+        for c in concerns:
+            lines += [
+                f"### {c.get('title')}",
+                "",
+                str(c.get("explanation") or ""),
+                "",
+                f"**Recommendation:** {c.get('recommendation') or ''}",
+                "",
+            ]
+
+    manual = report.get("manualInterventionRequired") or []
+    if manual:
+        lines += [
+            "## Manual intervention required",
+            "",
+            "These components were **not** modified in the generated flow.",
+            "",
+            "| Component | Current type | Outcome | Suggested target | Why |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for f in manual:
+            lines.append(
+                f"| {f.get('name')} | `{_short(f.get('sourceType'))}` | {f.get('outcome')} "
+                f"| {f.get('targetType') or '—'} | {_cell(f.get('explanation'))} |"
+            )
+        lines.append("")
+
+    changed = (report.get("components") or {}).get("configChanges") or []
+    replaced = (report.get("components") or {}).get("replaced") or []
+    if changed or replaced:
+        lines += [
+            "## Components requiring changes",
+            "",
+            "| Component | Current type | Changes required | Recommended migration | Manual review |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for f in list(replaced) + list(changed):
+            changes = "; ".join(
+                f"{c.get('from')} → {c.get('to')}" for c in (f.get("propertyChanges") or [])
+            ) or _cell(f.get("explanation"))
+            lines.append(
+                f"| {f.get('name')} | `{_short(f.get('sourceType'))}` "
+                f"| {changes} | {_cell(f.get('recommendation')) or '—'} "
+                f"| {'Yes' if f.get('manualReview') else 'No'} |"
+            )
+        lines.append("")
+
+    prop_changes = report.get("propertyChanges") or []
+    if prop_changes:
+        lines += ["## Property changes", "", "| Component | Property | From | To | Reason |", "| --- | --- | --- | --- | --- |"]
+        for entry in prop_changes:
+            for c in entry.get("changes") or []:
+                lines.append(
+                    f"| {entry.get('component')} | {c.get('property')} | {c.get('from')} "
+                    f"| {c.get('to')} | {_cell(c.get('reason'))} |"
+                )
+        lines.append("")
+
+    deprecated = (report.get("components") or {}).get("deprecated") or []
+    if deprecated:
+        lines += ["## Deprecated components", ""]
+        for f in deprecated:
+            lines.append(f"- **{f.get('name')}** (`{_short(f.get('sourceType'))}`): {_cell(f.get('explanation'))}")
+        lines.append("")
+
+    unverified = (report.get("components") or {}).get("unverified") or []
+    if unverified:
+        lines += [
+            "## Not verified",
+            "",
+            "No migration rule covers these types. They are most likely unchanged, "
+            "but this run did not prove it.",
+            "",
+        ]
+        for f in unverified:
+            lines.append(f"- **{f.get('name')}** (`{_short(f.get('sourceType'))}`)")
+        lines.append("")
+
+    generation = report.get("generation") or {}
+    if generation:
+        lines += [
+            "## Generated flow",
+            "",
+            f"- Output format: {generation.get('outputFormat')}",
+            f"- Changes applied: {generation.get('appliedCount', 0)}",
+            f"- Left unchanged for review: {generation.get('skippedCount', 0)}",
+            f"- Manual-review markers written into the flow: {generation.get('manualCount', 0)}",
+            "",
+        ]
+        applied = generation.get("appliedChanges") or []
+        if applied:
+            lines += ["| Component | Change | From | To |", "| --- | --- | --- | --- |"]
+            for c in applied:
+                lines.append(
+                    f"| {c.get('component')} | {c.get('change')} | {c.get('from')} | {c.get('to')} |"
+                )
+            lines.append("")
+
+    warnings = report.get("warnings") or []
+    if warnings:
+        lines += ["## Warnings", ""] + [f"- {w}" for w in warnings] + [""]
+
+    errors = report.get("errors") or []
+    if errors:
+        lines += ["## Errors", ""] + [f"- {e}" for e in errors] + [""]
+
+    compatible = (report.get("components") or {}).get("compatible") or []
+    lines += [
+        "## Compatible components",
+        "",
+        f"{len(compatible)} component(s) migrate without changes.",
+        "",
+    ]
+    for f in compatible[:200]:
+        lines.append(f"- {f.get('name')} (`{_short(f.get('sourceType'))}`)")
+    if len(compatible) > 200:
+        lines.append(f"- …and {len(compatible) - 200} more")
+
+    return "\n".join(lines) + "\n"
+
+
+def _short(type_name: Any) -> str:
+    return str(type_name or "").rsplit(".", 1)[-1]
+
+
+def _cell(text: Any) -> str:
+    return str(text or "").replace("|", "\\|").replace("\n", " ").strip()
+

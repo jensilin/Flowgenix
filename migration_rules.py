@@ -1,16 +1,12 @@
 """Deterministic NiFi migration rules.
 
 This is the authoritative, hand-curated knowledge base the migration engine
-consults *before* it asks an AI model anything. The user's requirement is
-explicit: AI assists, but it is never the sole source of truth for NiFi
-compatibility. So the precedence the engine applies is:
+consults. Compatibility is decided from these rules plus structural checks —
+never from a live NiFi instance or a language model.
 
-    1. A live NiFi catalog at the target version (absolute ground truth: either
-       the instance has the processor type installed or it does not)
-    2. These curated rules (known renames / removals / replacements / property
-       changes, each with a citation-worthy explanation)
-    3. The AI model (explanation and suggestions for what neither 1 nor 2 knows,
-       always surfaced to the user as "AI suggestion, needs review")
+    1. These curated rules (known renames / removals / replacements / property
+       changes, each with an explanation)
+    2. Structural checks (EVENT_DRIVEN, Variable Registry, templates)
 
 Adding coverage is meant to be mechanical: append a `ProcessorRule` or
 `PropertyRule` and it takes effect immediately, including in the generated flow.
@@ -21,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from nifi_catalog import parse_version
+from nifi_versions import parse_version
 
 # --- Outcome vocabulary -------------------------------------------------------
 #

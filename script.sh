@@ -1,24 +1,17 @@
 #!/usr/bin/env bash
-# Build and launch NiFi Flow Studio in Docker.
+# Build and launch Flowgenix in Docker.
 #
 # Usage:
 #   ./script.sh            # build image + run container (default port 7860)
-#   FLOW_STUDIO_PORT=8080 ./script.sh
-#   ./script.sh stop       # stop and remove the running container
-#   ./script.sh logs       # tail the container logs
-#
-# NiFi itself is NOT started by this script. Point Flow Studio at your
-# existing NiFi instance via the UI's "NiFi URL" field. If NiFi runs on your
-# host machine (the usual local setup), use:
-#     https://host.docker.internal:8443
-# instead of https://127.0.0.1:8443, since 127.0.0.1 inside the container
-# refers to the container itself, not your host machine.
+#   FLOWGENIX_PORT=8080 ./script.sh
+#   ./script.sh stop
+#   ./script.sh logs
 
 set -euo pipefail
 
-IMAGE_NAME="nifi-flow-studio"
-CONTAINER_NAME="nifi-flow-studio"
-PORT="${FLOW_STUDIO_PORT:-7860}"
+IMAGE_NAME="flowgenix"
+CONTAINER_NAME="flowgenix"
+PORT="${FLOWGENIX_PORT:-${FLOW_STUDIO_PORT:-7860}}"
 
 cd "$(dirname "$0")"
 
@@ -55,20 +48,16 @@ if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
   docker rm -f "${CONTAINER_NAME}" >/dev/null
 fi
 
-mkdir -p "$(pwd)/flows"
+mkdir -p "$(pwd)/migrations"
 
-echo "==> Starting Flow Studio container on port ${PORT}"
+echo "==> Starting Flowgenix on port ${PORT}"
 docker run -d \
   --name "${CONTAINER_NAME}" \
-  --add-host host.docker.internal:host-gateway \
   -p "${PORT}:7860" \
-  -v "$(pwd)/flows:/app/flows" \
+  -v "$(pwd)/migrations:/app/migrations" \
   "${IMAGE_NAME}"
 
 echo
-echo "==> Flow Studio is starting: http://localhost:${PORT}/"
-echo "    If NiFi runs on your host machine, use https://host.docker.internal:8443"
-echo "    as the NiFi URL inside the UI."
-echo
+echo "==> Flowgenix is starting: http://localhost:${PORT}/"
 echo "    Logs:  ./script.sh logs"
 echo "    Stop:  ./script.sh stop"

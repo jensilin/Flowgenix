@@ -34,6 +34,16 @@ def test_version_choices_is_newest_first_for_the_dropdown():
     assert {"version", "label", "line", "supportsTemplates"} <= set(choices[0])
 
 
+def test_26_is_a_first_class_release():
+    v = get_version("2.6.0")
+    assert v is not None
+    assert v.version == "2.6.0"
+    assert v.supports_templates is False
+    versions = [item.version for item in all_versions()]
+    assert versions.index("2.6.0") < versions.index("2.7.0")
+    assert versions.index("2.5.0") < versions.index("2.6.0")
+
+
 def test_2x_drops_templates_variables_and_event_driven():
     v2 = get_version("2.11.0")
     assert v2 is not None

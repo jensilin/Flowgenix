@@ -14,7 +14,6 @@ from flow_document import (
     CONFIDENCE_LIKELY,
     CONFIDENCE_UNKNOWN,
     FORMAT_JSON_SNAPSHOT,
-    FORMAT_STUDIO_SPEC,
     FORMAT_XML_TEMPLATE,
     FlowParseError,
     detected_line,
@@ -43,14 +42,13 @@ def test_format_is_decided_by_content_not_extension(xml_template_1x):
     assert doc.source_format == FORMAT_XML_TEMPLATE
 
 
-def test_studio_spec_is_not_mistaken_for_a_nifi_export():
+def test_studio_spec_is_rejected_as_not_a_nifi_export():
     spec = """
     {"processGroupName": "demo", "nifiVersion": "1.25.0",
      "processors": [{"name": "Gen", "type": "GenerateFlowFile", "properties": {}}]}
     """
-    doc = parse_flow_file(spec, "demo.json")
-    assert doc.source_format == FORMAT_STUDIO_SPEC
-    assert doc.detected_version == "1.25.0"
+    with pytest.raises(FlowParseError, match="flow definition"):
+        parse_flow_file(spec, "demo.json")
 
 
 def test_empty_upload_is_rejected():
@@ -218,6 +216,27 @@ def test_a_template_without_bundles_is_still_known_to_be_1x():
     assert doc.detected_version is None
     assert detected_line(doc) == "1.x"
     assert any("1.x-only feature" in e for e in doc.detection_evidence)
+
+
+def test_xml_tag_aliases_are_accepted():
+    """Older encodings used encodingVersion and singular collection tags."""
+    xml = """
+    <template encodingVersion="1.2">
+      <name>alias-flow</name>
+      <snippet>
+        <processor>
+          <id>p1</id>
+          <name>Read</name>
+          <type>org.apache.nifi.processors.standard.GetFile</type>
+          <bundle><group>org.apache.nifi</group><artifact>nifi-standard-nar</artifact><version>1.19.1</version></bundle>
+        </processor>
+      </snippet>
+    </template>
+    """
+    doc = parse_flow_file(xml, "alias.xml")
+    assert doc.source_format == FORMAT_XML_TEMPLATE
+    assert [p.name for p in doc.processors] == ["Read"]
+    assert any("encoding-version=1.2" in e for e in doc.detection_evidence)
 
 
 def test_original_payload_is_retained_for_non_destructive_migration(json_flow_1x):

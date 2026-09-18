@@ -1,19 +1,18 @@
-"""Parse and serialize the flow files NiFi exports.
+"""Parse the flow files NiFi exports.
 
-Three formats matter for migration, and the format alone does *not* tell you the
+Two formats matter for migration, and the format alone does *not* tell you the
 NiFi version — which is the trap this module exists to avoid:
 
   * ``xml_template``   — NiFi 1.x "Download template" (.xml). 1.x only; NiFi 2.0
-                         removed templates entirely.
+                         removed templates entirely. Older encodings used
+                         different tag/attribute names; the parser accepts aliases.
   * ``json_snapshot``  — "Download flow definition" (.json). Produced by **both**
                          1.x (1.16+) and 2.x, so a .json upload must never be
-                         assumed to be 2.x.
-  * ``studio_spec``    — this application's own flow spec (see build_flow_from_spec).
+                         assumed to be 2.x. Field sets also differ around 2.6.
 
 Everything is normalized into `FlowDocument`, a version-agnostic tree of
 `Component` records, so the migration engine works on one shape regardless of
-what was uploaded. Serialization goes back out as a 2.x-compatible JSON flow
-definition (or the original shape when migrating within a line).
+what was uploaded.
 
 Version detection is evidence-based and reports its confidence, because guessing
 silently is how you corrupt someone's production flow.
@@ -27,11 +26,11 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any
 
-from nifi_catalog import parse_version
+from flow_schema import xml_children, xml_encoding_of
+from nifi_versions import parse_version
 
 FORMAT_XML_TEMPLATE = "xml_template"
 FORMAT_JSON_SNAPSHOT = "json_snapshot"
-FORMAT_STUDIO_SPEC = "studio_spec"
 
 #: Confidence levels for a detected source version.
 CONFIDENCE_CERTAIN = "certain"
@@ -197,14 +196,14 @@ def _parse_xml(text: str, filename: str) -> FlowDocument:
 
 
 def _walk_xml_group(node: ET.Element, doc: FlowDocument, group_path: str) -> None:
-    for proc in node.findall("processors"):
+    for proc in xml_children(node, "processors"):
         doc.components.append(_xml_processor(proc, group_path))
-    for svc in node.findall("controllerServices"):
+    for svc in xml_children(node, "controllerServices"):
         doc.components.append(_xml_service(svc, group_path))
-    for conn in node.findall("connections"):
+    for conn in xml_children(node, "connections"):
         doc.components.append(_xml_connection(conn, group_path))
     for port_tag, kind in (("inputPorts", "port"), ("outputPorts", "port")):
-        for port in node.findall(port_tag):
+        for port in xml_children(node, port_tag):
             doc.components.append(
                 Component(
                     kind=kind,
@@ -215,7 +214,7 @@ def _walk_xml_group(node: ET.Element, doc: FlowDocument, group_path: str) -> Non
                     raw={"xmlTag": port_tag},
                 )
             )
-    for funnel in node.findall("funnels"):
+    for funnel in xml_children(node, "funnels"):
         doc.components.append(
             Component(
                 kind="funnel",
@@ -224,7 +223,7 @@ def _walk_xml_group(node: ET.Element, doc: FlowDocument, group_path: str) -> Non
                 group_path=group_path,
             )
         )
-    for label in node.findall("labels"):
+    for label in xml_children(node, "labels"):
         doc.components.append(
             Component(
                 kind="label",
@@ -234,11 +233,11 @@ def _walk_xml_group(node: ET.Element, doc: FlowDocument, group_path: str) -> Non
             )
         )
 
-    for group in node.findall("processGroups"):
+    for group in xml_children(node, "processGroups"):
         name = _xml_text(group, "name") or "group"
         child_path = f"{group_path}{name}/"
         # Variables live on the group in 1.x and vanish in 2.x, so capture them.
-        for var in group.findall("variables"):
+        for var in xml_children(group, "variables"):
             doc.variables.append(
                 {
                     "name": _xml_text(var, "name"),
@@ -249,6 +248,9 @@ def _walk_xml_group(node: ET.Element, doc: FlowDocument, group_path: str) -> Non
         contents = group.find("contents")
         if contents is not None:
             _walk_xml_group(contents, doc, child_path)
+        else:
+            # Older encodings nested child components directly on the group.
+            _walk_xml_group(group, doc, child_path)
 
 
 def _xml_processor(node: ET.Element, group_path: str) -> Component:
@@ -364,11 +366,6 @@ def _strip_ns(tag: str) -> str:
 
 
 def _parse_json(data: dict[str, Any], text: str, filename: str) -> FlowDocument:
-    # This application's own spec shape — detect before the NiFi shapes so a
-    # Flow Studio export round-trips instead of being misread as a NiFi export.
-    if "processGroupName" in data and "processors" in data:
-        return _parse_studio_spec(data, text, filename)
-
     root = _json_root_group(data)
     if root is None:
         raise FlowParseError(
@@ -398,7 +395,7 @@ def _json_root_group(data: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(node, dict):
             return node
     # A bare versioned process group (no wrapper) still has these markers.
-    if data.get("componentType") == "PROCESS_GROUP" or "processors" in data:
+    if data.get("componentType") == "PROCESS_GROUP":
         return data
     return None
 
@@ -532,75 +529,6 @@ def _json_parameter_contexts(data: dict[str, Any], root: dict[str, Any]) -> list
     return contexts
 
 
-def _parse_studio_spec(data: dict[str, Any], text: str, filename: str) -> FlowDocument:
-    doc = FlowDocument(
-        source_format=FORMAT_STUDIO_SPEC,
-        filename=filename,
-        original=data,
-        raw_text=text,
-    )
-    doc.root_name = str(data.get("processGroupName") or "flow")
-
-    def walk(group: dict[str, Any], path: str) -> None:
-        for proc in group.get("processors") or []:
-            doc.components.append(
-                Component(
-                    kind="processor",
-                    identifier=str(proc.get("name") or ""),
-                    name=str(proc.get("name") or ""),
-                    type_name=str(proc.get("type") or ""),
-                    bundle=dict(proc.get("bundle") or {}),
-                    properties=dict(proc.get("properties") or {}),
-                    scheduling_strategy=str(proc.get("schedulingStrategy") or ""),
-                    scheduling_period=str(proc.get("schedulingPeriod") or ""),
-                    auto_terminated=[str(r) for r in (proc.get("autoTerminated") or [])],
-                    group_path=path,
-                    raw=proc,
-                )
-            )
-        for svc in group.get("controllerServices") or []:
-            doc.components.append(
-                Component(
-                    kind="controllerService",
-                    identifier=str(svc.get("name") or ""),
-                    name=str(svc.get("name") or ""),
-                    type_name=str(svc.get("type") or ""),
-                    properties=dict(svc.get("properties") or {}),
-                    group_path=path,
-                    raw=svc,
-                )
-            )
-        for conn in group.get("connections") or []:
-            doc.components.append(
-                Component(
-                    kind="connection",
-                    identifier=f"{conn.get('from')}->{conn.get('to')}",
-                    name=str(conn.get("name") or ""),
-                    relationships=[str(r) for r in (conn.get("relationships") or [])],
-                    group_path=path,
-                    raw=conn,
-                )
-            )
-        for child in group.get("processGroups") or []:
-            walk(child, f"{path}{child.get('processGroupName') or child.get('name') or 'group'}/")
-
-    walk(data, "/")
-    for ctx in data.get("parameterContexts") or []:
-        doc.parameter_contexts.append(
-            {
-                "name": ctx.get("name"),
-                "parameters": [p.get("name") for p in (ctx.get("parameters") or [])],
-            }
-        )
-    doc.detected_version = str(data.get("nifiVersion") or "") or None
-    doc.detection_confidence = CONFIDENCE_CERTAIN if doc.detected_version else CONFIDENCE_UNKNOWN
-    if doc.detected_version:
-        doc.detection_evidence.append(
-            f"Flow Studio spec declares nifiVersion={doc.detected_version}."
-        )
-    return doc
-
-
 # --- Source-version detection -------------------------------------------------
 #
 # The single most reliable signal is the NAR bundle version stamped on every
@@ -631,7 +559,7 @@ def _detect_version_xml(root: ET.Element, doc: FlowDocument) -> None:
             "select the exact release manually."
         )
 
-    encoding = root.get("encoding-version") or root.get("encodingVersion")
+    encoding = xml_encoding_of(root)
     if encoding:
         doc.detection_evidence.append(f"Template encoding-version={encoding}.")
 

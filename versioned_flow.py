@@ -28,6 +28,11 @@ from __future__ import annotations
 
 import uuid
 import xml.etree.ElementTree as ET
+from flow_schema import (
+    xml_children,
+    xml_encoding_attribute,
+    xml_encoding_for_version,
+)
 from typing import Any, Callable
 
 #: Signature of the callback that applies migration decisions to a component.
@@ -55,7 +60,7 @@ def snapshot_from_xml_template(
     # case ("download template" on a group). Promote that group to the root so
     # the import does not nest the whole flow one level deeper than the author
     # drew it.
-    groups = snippet.findall("processGroups")
+    groups = xml_children(snippet, "processGroups")
     lone_group = groups[0] if len(groups) == 1 and not _has_direct_components(snippet) else None
 
     if lone_group is not None:
@@ -92,7 +97,7 @@ def snapshot_from_xml_template(
 
 def _has_direct_components(node: ET.Element) -> bool:
     return any(
-        node.find(tag) is not None
+        xml_children(node, tag)
         for tag in ("processors", "connections", "controllerServices", "funnels", "inputPorts", "outputPorts")
     )
 
@@ -105,8 +110,9 @@ def _group_to_versioned(
 ) -> dict[str, Any]:
     group_id = _text(group, "id") or _new_id()
     contents = group.find("contents")
+    source = contents if contents is not None else group
     node = _contents_to_versioned(
-        contents if contents is not None else ET.Element("contents"),
+        source,
         target_version,
         apply,
         group_id,
@@ -145,30 +151,34 @@ def _contents_to_versioned(
     parent_id: str,
 ) -> dict[str, Any]:
     processors = []
-    for proc in contents.findall("processors"):
+    for proc in xml_children(contents, "processors"):
         node = _processor_to_versioned(proc, target_version, group_id)
         if apply:
             apply("processor", node["identifier"], node)
         processors.append(node)
 
     services = []
-    for svc in contents.findall("controllerServices"):
+    for svc in xml_children(contents, "controllerServices"):
         node = _service_to_versioned(svc, target_version, group_id)
         if apply:
             apply("controllerService", node["identifier"], node)
         services.append(node)
 
-    connections = [_connection_to_versioned(c, group_id) for c in contents.findall("connections")]
-    input_ports = [_port_to_versioned(p, group_id, "INPUT_PORT") for p in contents.findall("inputPorts")]
-    output_ports = [
-        _port_to_versioned(p, group_id, "OUTPUT_PORT") for p in contents.findall("outputPorts")
+    connections = [
+        _connection_to_versioned(c, group_id) for c in xml_children(contents, "connections")
     ]
-    funnels = [_funnel_to_versioned(f, group_id) for f in contents.findall("funnels")]
-    labels = [_label_to_versioned(l, group_id) for l in contents.findall("labels")]
+    input_ports = [
+        _port_to_versioned(p, group_id, "INPUT_PORT") for p in xml_children(contents, "inputPorts")
+    ]
+    output_ports = [
+        _port_to_versioned(p, group_id, "OUTPUT_PORT") for p in xml_children(contents, "outputPorts")
+    ]
+    funnels = [_funnel_to_versioned(f, group_id) for f in xml_children(contents, "funnels")]
+    labels = [_label_to_versioned(l, group_id) for l in xml_children(contents, "labels")]
 
     child_groups = [
         _group_to_versioned(g, target_version, apply, group_id)
-        for g in contents.findall("processGroups")
+        for g in xml_children(contents, "processGroups")
     ]
 
     return {
@@ -424,3 +434,201 @@ def _float(value: str) -> float:
 
 def _new_id() -> str:
     return str(uuid.uuid4())
+
+
+# --- JSON snapshot → XML template --------------------------------------------
+
+
+def template_from_snapshot(snapshot: dict[str, Any], target_version: str) -> str:
+    """Serialize a VersionedFlowSnapshot as a 1.x XML template.
+
+    Emits the *target* encoding's tags and `encoding-version` attribute, not
+    whatever the source file happened to use.
+    """
+    root_group = snapshot.get("flowContents") or snapshot.get("rootGroup") or {}
+    if not isinstance(root_group, dict):
+        raise ValueError("JSON flow definition has no flowContents to convert to XML.")
+
+    encoding = xml_encoding_for_version(target_version)
+    template = ET.Element("template")
+    template.set(xml_encoding_attribute(), encoding)
+    _set_text(template, "description", str(root_group.get("comments") or "Migrated by Flowgenix"))
+    _set_text(template, "name", str(root_group.get("name") or "migrated-flow"))
+    _set_text(template, "groupId", str(root_group.get("identifier") or _new_id()))
+
+    snippet = ET.SubElement(template, "snippet")
+    snippet.append(_group_to_xml(root_group, target_version))
+
+    ET.indent(template, space="  ")
+    xml_body = ET.tostring(template, encoding="unicode")
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + xml_body + "\n"
+
+
+def _group_to_xml(group: dict[str, Any], target_version: str) -> ET.Element:
+    node = ET.Element("processGroups")
+    _set_text(node, "id", str(group.get("identifier") or _new_id()))
+    _set_text(node, "name", str(group.get("name") or "group"))
+    comments = str(group.get("comments") or "")
+    if comments:
+        _set_text(node, "comments", comments)
+    _position_xml(node, group.get("position"))
+    _set_text(node, "flowfileConcurrency", str(group.get("flowFileConcurrency") or "UNBOUNDED"))
+    _set_text(
+        node, "flowfileOutboundPolicy", str(group.get("flowFileOutboundPolicy") or "STREAM_WHEN_AVAILABLE")
+    )
+
+    contents = ET.SubElement(node, "contents")
+    for proc in group.get("processors") or []:
+        contents.append(_processor_to_xml(proc, target_version))
+    for svc in group.get("controllerServices") or []:
+        contents.append(_service_to_xml(svc, target_version))
+    for conn in group.get("connections") or []:
+        contents.append(_connection_to_xml(conn))
+    for port in group.get("inputPorts") or []:
+        contents.append(_port_to_xml(port, "inputPorts"))
+    for port in group.get("outputPorts") or []:
+        contents.append(_port_to_xml(port, "outputPorts"))
+    for funnel in group.get("funnels") or []:
+        contents.append(_funnel_to_xml(funnel))
+    for label in group.get("labels") or []:
+        contents.append(_label_to_xml(label))
+    for child in group.get("processGroups") or []:
+        contents.append(_group_to_xml(child, target_version))
+
+    variables = group.get("variables")
+    if isinstance(variables, dict):
+        for name, value in variables.items():
+            var = ET.SubElement(node, "variables")
+            _set_text(var, "name", str(name))
+            _set_text(var, "value", "" if value is None else str(value))
+    return node
+
+
+def _processor_to_xml(proc: dict[str, Any], target_version: str) -> ET.Element:
+    node = ET.Element("processors")
+    _set_text(node, "id", str(proc.get("identifier") or proc.get("id") or _new_id()))
+    _set_text(node, "name", str(proc.get("name") or ""))
+    _set_text(node, "type", str(proc.get("type") or ""))
+    _bundle_xml(node, proc.get("bundle"), target_version)
+    _position_xml(node, proc.get("position"))
+    config = ET.SubElement(node, "config")
+    _set_text(config, "schedulingStrategy", str(proc.get("schedulingStrategy") or "TIMER_DRIVEN"))
+    _set_text(config, "schedulingPeriod", str(proc.get("schedulingPeriod") or "0 sec"))
+    _set_text(config, "executionNode", str(proc.get("executionNode") or "ALL"))
+    _set_text(config, "penaltyDuration", str(proc.get("penaltyDuration") or "30 sec"))
+    _set_text(config, "yieldDuration", str(proc.get("yieldDuration") or "1 sec"))
+    _set_text(config, "bulletinLevel", str(proc.get("bulletinLevel") or "WARN"))
+    comments = str(proc.get("comments") or "")
+    if comments:
+        _set_text(config, "comments", comments)
+    _properties_xml(config, proc.get("properties"))
+    for rel in proc.get("autoTerminatedRelationships") or []:
+        _set_text(config, "autoTerminatedRelationships", str(rel))
+    for rel in proc.get("relationships") or []:
+        if not isinstance(rel, dict):
+            continue
+        rel_el = ET.SubElement(node, "relationships")
+        _set_text(rel_el, "name", str(rel.get("name") or ""))
+        _set_text(rel_el, "autoTerminate", "true" if rel.get("autoTerminate") else "false")
+    return node
+
+
+def _service_to_xml(svc: dict[str, Any], target_version: str) -> ET.Element:
+    node = ET.Element("controllerServices")
+    _set_text(node, "id", str(svc.get("identifier") or svc.get("id") or _new_id()))
+    _set_text(node, "name", str(svc.get("name") or ""))
+    _set_text(node, "type", str(svc.get("type") or ""))
+    comments = str(svc.get("comments") or "")
+    if comments:
+        _set_text(node, "comments", comments)
+    _bundle_xml(node, svc.get("bundle"), target_version)
+    _properties_xml(node, svc.get("properties"))
+    return node
+
+
+def _connection_to_xml(conn: dict[str, Any]) -> ET.Element:
+    node = ET.Element("connections")
+    _set_text(node, "id", str(conn.get("identifier") or conn.get("id") or _new_id()))
+    if conn.get("name"):
+        _set_text(node, "name", str(conn.get("name")))
+    _connectable_xml(node, "source", conn.get("source"))
+    _connectable_xml(node, "destination", conn.get("destination"))
+    for rel in conn.get("selectedRelationships") or []:
+        _set_text(node, "selectedRelationships", str(rel))
+    _set_text(
+        node,
+        "backPressureObjectThreshold",
+        str(conn.get("backPressureObjectThreshold") or 10000),
+    )
+    _set_text(
+        node,
+        "backPressureDataSizeThreshold",
+        str(conn.get("backPressureDataSizeThreshold") or "1 GB"),
+    )
+    _set_text(node, "flowFileExpiration", str(conn.get("flowFileExpiration") or "0 sec"))
+    return node
+
+
+def _connectable_xml(parent: ET.Element, tag: str, data: Any) -> None:
+    node = ET.SubElement(parent, tag)
+    payload = data if isinstance(data, dict) else {}
+    _set_text(node, "id", str(payload.get("id") or ""))
+    _set_text(node, "groupId", str(payload.get("groupId") or ""))
+    _set_text(node, "type", str(payload.get("type") or "PROCESSOR"))
+    if payload.get("name"):
+        _set_text(node, "name", str(payload.get("name")))
+
+
+def _port_to_xml(port: dict[str, Any], tag: str) -> ET.Element:
+    node = ET.Element(tag)
+    _set_text(node, "id", str(port.get("identifier") or port.get("id") or _new_id()))
+    _set_text(node, "name", str(port.get("name") or ""))
+    _position_xml(node, port.get("position"))
+    return node
+
+
+def _funnel_to_xml(funnel: dict[str, Any]) -> ET.Element:
+    node = ET.Element("funnels")
+    _set_text(node, "id", str(funnel.get("identifier") or funnel.get("id") or _new_id()))
+    _position_xml(node, funnel.get("position"))
+    return node
+
+
+def _label_to_xml(label: dict[str, Any]) -> ET.Element:
+    node = ET.Element("labels")
+    _set_text(node, "id", str(label.get("identifier") or label.get("id") or _new_id()))
+    _set_text(node, "label", str(label.get("label") or label.get("name") or ""))
+    _position_xml(node, label.get("position"))
+    return node
+
+
+def _bundle_xml(parent: ET.Element, bundle: Any, target_version: str) -> None:
+    data = bundle if isinstance(bundle, dict) else {}
+    node = ET.SubElement(parent, "bundle")
+    _set_text(node, "group", str(data.get("group") or "org.apache.nifi"))
+    _set_text(node, "artifact", str(data.get("artifact") or "nifi-standard-nar"))
+    _set_text(node, "version", target_version)
+
+
+def _position_xml(parent: ET.Element, position: Any) -> None:
+    data = position if isinstance(position, dict) else {}
+    node = ET.SubElement(parent, "position")
+    _set_text(node, "x", str(float(data.get("x") or 0)))
+    _set_text(node, "y", str(float(data.get("y") or 0)))
+
+
+def _properties_xml(parent: ET.Element, properties: Any) -> None:
+    if not isinstance(properties, dict) or not properties:
+        return
+    wrapper = ET.SubElement(parent, "properties")
+    for key, value in properties.items():
+        entry = ET.SubElement(wrapper, "entry")
+        _set_text(entry, "key", str(key))
+        if value is not None:
+            _set_text(entry, "value", str(value))
+
+
+def _set_text(parent: ET.Element, tag: str, text: str) -> ET.Element:
+    child = ET.SubElement(parent, tag)
+    child.text = text
+    return child

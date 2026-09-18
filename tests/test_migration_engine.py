@@ -126,61 +126,7 @@ def test_no_variable_warning_when_targeting_1x(xml_template_1x):
     assert not [w for w in analysis.warnings if "Variable Registry" in w]
 
 
-# --- Catalog precedence -------------------------------------------------------
-
-
-def test_live_catalog_confirms_a_processor_exists(json_flow_1x, fake_catalog_factory):
-    catalog = fake_catalog_factory("2.11.0", {"getfile", "postfile"})
-    doc = parse_flow_file(json_flow_1x, "f.json")
-    analysis = analyze_migration(doc, "1.23.2", "2.11.0", target_catalog=catalog)
-
-    read = next(f for f in analysis.findings if f.name == "Read Input")
-    assert read.outcome == COMPATIBLE
-    assert read.decided_by == "catalog"
-    assert analysis.catalog_version == "2.11.0"
-
-
-def test_live_catalog_marks_a_missing_processor_as_removed(fake_catalog_factory):
-    """The catalog is ground truth: absent means absent, no rule required."""
-    flow = """
-    {"flowContents": {"name": "f", "processors": [
-        {"identifier": "p1", "name": "Odd One", "type": "org.apache.nifi.custom.MyProc",
-         "bundle": {"version": "1.25.0"}, "properties": {}}]}}
-    """
-    catalog = fake_catalog_factory("2.11.0", {"getfile"})
-    doc = parse_flow_file(flow, "f.json")
-    analysis = analyze_migration(doc, "1.25.0", "2.11.0", target_catalog=catalog)
-
-    finding = analysis.findings[0]
-    assert finding.outcome == REMOVED
-    assert finding.decided_by == "catalog"
-    assert finding.manual_review is True
-
-
-def test_mismatched_catalog_is_ignored_and_warned_about(json_flow_1x, fake_catalog_factory):
-    """A catalog from the wrong version must not be trusted as the target."""
-    catalog = fake_catalog_factory("1.25.0", {"getfile"})
-    doc = parse_flow_file(json_flow_1x, "f.json")
-    analysis = analyze_migration(doc, "1.23.2", "2.11.0", target_catalog=catalog)
-
-    assert analysis.catalog_version is None
-    assert any("the live catalog was ignored" in w for w in analysis.warnings)
-    read = next(f for f in analysis.findings if f.name == "Read Input")
-    assert read.decided_by != "catalog"
-
-
-def test_curated_rule_wins_over_catalog_for_the_explanation(json_flow_1x, fake_catalog_factory):
-    """PostHTTP absent from 2.x is known; the rule's explanation is richer than
-    the catalog's bare 'not installed', so the rule supplies it."""
-    catalog = fake_catalog_factory("2.11.0", {"getfile"})
-    doc = parse_flow_file(json_flow_1x, "f.json")
-    analysis = analyze_migration(doc, "1.23.2", "2.11.0", target_catalog=catalog)
-
-    push = next(f for f in analysis.findings if f.name == "Push Downstream")
-    assert push.outcome == REMOVED
-    assert push.decided_by == "rules"
-    assert push.target_type == "InvokeHTTP"
-
+# --- Unverified types (offline, no live catalog) ------------------------------
 
 _UNCOVERED_FLOW = """
 {"flowContents": {"name": "f", "processors": [
@@ -189,7 +135,7 @@ _UNCOVERED_FLOW = """
 """
 
 
-def test_without_a_catalog_an_uncovered_processor_is_unknown_not_compatible():
+def test_an_uncovered_processor_is_unknown_not_compatible():
     """A false 'compatible' is the dangerous answer, so we report uncertainty."""
     doc = parse_flow_file(_UNCOVERED_FLOW, "f.json")
     analysis = analyze_migration(doc, "1.25.0", "2.11.0")
@@ -435,16 +381,92 @@ def test_migrated_flow_serialises_to_valid_json(xml_template_1x):
     assert json.loads(text)["flowContents"]["name"] == "legacy-intake"
 
 
-def test_studio_spec_migration_stays_in_studio_spec_format():
-    spec = """
-    {"processGroupName": "demo", "nifiVersion": "1.25.0", "processors": [
-        {"name": "Reshape", "type": "JoltTransformJSON",
-         "properties": {"Jolt Transformation DSL": "jolt-transform-shift"}}]}
-    """
-    doc = parse_flow_file(spec, "demo.json")
+def test_xml_output_is_rejected_for_a_2x_target(xml_template_1x):
+    doc = parse_flow_file(xml_template_1x, "t.xml")
     analysis = analyze_migration(doc, "1.25.0", "2.11.0")
-    result = generate_migrated_flow(doc, analysis)
+    with pytest.raises(ValueError, match="cannot import XML templates"):
+        generate_migrated_flow(doc, analysis, output_format="xml_template")
 
-    assert result.output_format == "studio_spec"
-    assert result.migrated["nifiVersion"] == "2.11.0"
-    assert "Jolt Transform" in result.migrated["processors"][0]["properties"]
+
+def test_json_flow_converts_to_xml_for_a_1x_target(json_flow_1x):
+    doc = parse_flow_file(json_flow_1x, "f.json")
+    analysis = analyze_migration(doc, "1.23.2", "1.25.0")
+    result = generate_migrated_flow(doc, analysis, output_format="xml_template")
+    assert result.output_format == "xml_template"
+    assert result.xml_text.startswith("<?xml")
+    assert 'encoding-version="1.3"' in result.xml_text
+    assert "<processors>" in result.xml_text
+    round_trip = parse_flow_file(result.xml_text, "round.xml")
+    names = {p.name for p in round_trip.processors}
+    assert "Read Input" in names
+
+
+def test_xml_round_trips_through_json_on_a_1x_target(xml_template_1x):
+    doc = parse_flow_file(xml_template_1x, "t.xml")
+    analysis = analyze_migration(doc, "1.25.0", "1.25.0")
+    json_result = generate_migrated_flow(doc, analysis, output_format="json_snapshot")
+    xml_result = generate_migrated_flow(doc, analysis, output_format="xml_template")
+    assert "flowContents" in json_result.migrated
+    back = parse_flow_file(xml_result.xml_text, "back.xml")
+    assert {p.name for p in back.processors} == {p.name for p in doc.processors}
+
+
+def test_post_26_json_fields_are_stripped_when_targeting_26():
+    flow = """
+    {"flowContents": {"name": "f", "executionEngine": "STANDARD",
+      "defaultBackoffMechanism": "PENALIZE_FLOWFILE", "maxConcurrentTasks": 4,
+      "processors": [{"identifier": "p1", "name": "P",
+        "type": "org.apache.nifi.processors.standard.GetFile",
+        "bundle": {"version": "2.11.0"}, "properties": {}}]},
+     "flowStatus": {"runningCount": 0},
+     "parameterProviders": {},
+     "flowEncodingVersion": "1.0"}
+    """
+    doc = parse_flow_file(flow, "late.json")
+    analysis = analyze_migration(doc, "2.11.0", "2.6.0")
+    result = generate_migrated_flow(doc, analysis)
+    assert "flowStatus" not in result.migrated
+    assert "defaultBackoffMechanism" not in result.migrated["flowContents"]
+    assert "maxConcurrentTasks" not in result.migrated["flowContents"]
+    assert "parameterProviders" in result.migrated
+    assert any("flowStatus" in n for n in result.dialect_notes)
+
+
+def test_required_post_26_fields_are_filled_when_targeting_211():
+    flow = """
+    {"flowContents": {"name": "f", "executionEngine": "STANDARD",
+      "processors": [{"identifier": "p1", "name": "P",
+        "type": "org.apache.nifi.processors.standard.GetFile",
+        "bundle": {"version": "2.6.0"}, "properties": {}}]},
+     "parameterProviders": {},
+     "flowEncodingVersion": "1.0"}
+    """
+    doc = parse_flow_file(flow, "early-2x.json")
+    analysis = analyze_migration(doc, "2.6.0", "2.11.0")
+    result = generate_migrated_flow(doc, analysis)
+    group = result.migrated["flowContents"]
+    assert group["defaultBackoffMechanism"] == "PENALIZE_FLOWFILE"
+    assert group["maxConcurrentTasks"] == 1
+    assert any("defaultBackoffMechanism" in n for n in result.dialect_notes)
+
+
+def test_xml_writer_emits_target_encoding_not_source_alias():
+    xml = """
+    <template encodingVersion="1.2">
+      <name>old</name>
+      <snippet>
+        <processor>
+          <id>p1</id><name>Read</name>
+          <type>org.apache.nifi.processors.standard.GetFile</type>
+          <bundle><version>1.19.1</version></bundle>
+        </processor>
+      </snippet>
+    </template>
+    """
+    doc = parse_flow_file(xml, "old.xml")
+    analysis = analyze_migration(doc, "1.19.1", "1.25.0")
+    result = generate_migrated_flow(doc, analysis, output_format="xml_template")
+    assert 'encoding-version="1.3"' in result.xml_text
+    assert "encodingVersion" not in result.xml_text
+    assert "<processors>" in result.xml_text
+    assert "<processor>" not in result.xml_text.replace("<processors>", "")
