@@ -35,8 +35,9 @@ names an imported group after the file it was uploaded from.
 ## Deploy to Vercel
 
 The app ships as a single Python function. `api/index.py` hands every request to
-the same FastAPI app you run locally, and `vercel.json` rewrites all traffic to
-it, so the page, the static assets and the API come from one deployment.
+the same FastAPI app you run locally, and `vercel.json` routes all traffic to it
+under the original request path, so the page, the static assets and the API all
+come from one place and behave exactly as they do locally.
 
 ```powershell
 npm i -g vercel

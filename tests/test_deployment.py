@@ -28,20 +28,29 @@ def test_the_entry_point_exposes_the_same_app_the_browser_talks_to():
     assert "sys.path" in source, "the repo root must be importable from inside api/"
 
 
-def test_every_request_is_routed_to_the_entry_point(config):
-    rewrites = config.get("rewrites") or []
+def test_every_request_reaches_the_app_under_its_original_path(config):
+    """`dest` has to name the source file.
+
+    Routing to the path `/api/index` instead hands the function that path for
+    every request, and FastAPI — which has no such route — answers 404 to the
+    whole site.
+    """
+    routes = config.get("routes") or []
     assert any(
-        r.get("source") == "/(.*)" and r.get("destination") == "/api/index" for r in rewrites
-    ), f"vercel.json does not send all traffic to api/index: {rewrites}"
+        r.get("src") == "/(.*)" and r.get("dest") == "api/index.py" for r in routes
+    ), f"vercel.json does not route all traffic to the entry point file: {routes}"
+    assert "rewrites" not in config, "`rewrites` cannot be combined with `routes`"
 
 
 def test_static_assets_are_bundled_with_the_function(config):
-    function = (config.get("functions") or {}).get("api/index.py") or {}
-    assert "ui/static" in (function.get("includeFiles") or ""), (
+    build = next(b for b in config["builds"] if b["src"] == "api/index.py")
+    assert build["use"] == "@vercel/python"
+    included = build.get("config", {}).get("includeFiles") or []
+    assert any("ui/static" in pattern for pattern in included), (
         "the page, stylesheet, script and favicon live in ui/static and must be "
         "included, or the deployed site serves the API with no UI"
     )
-    assert function.get("maxDuration", 0) >= 60, "large flows need more than the default budget"
+    assert build["config"].get("maxDuration", 0) >= 60, "large flows need time to convert"
 
 
 def test_the_runtime_requirements_do_not_drag_in_the_test_tooling():
