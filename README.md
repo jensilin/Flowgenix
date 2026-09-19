@@ -14,14 +14,20 @@ The tool is **offline**. It does not talk to a live NiFi, and it stores nothing:
 a migration is parsed, converted and handed back inside the same response, and
 the browser saves the files.
 
-## Run locally
+## Use it
+
+**Hosted: https://flowgenix-five.vercel.app/** — nothing to install.
+
+Or run it yourself, which you will want for flows above the 4.5 MB the host
+accepts, and for offline or air-gapped work:
 
 ```powershell
 python -m pip install -r requirements-dev.txt
 python -m ui.app
 ```
 
-Open **http://127.0.0.1:7860/**.
+Open **http://127.0.0.1:7860/**. Both are the same app, and the steps below
+apply to either.
 
 1. Drop a `.xml` template or `.json` flow definition.
 2. Confirm source version (detected from NAR bundle stamps when present).
@@ -47,7 +53,15 @@ vercel --prod   # production
 
 A Git-connected project needs no configuration beyond this repo: Vercel reads
 `requirements.txt` for the runtime dependencies and `.python-version` for the
-interpreter. No environment variables are required.
+interpreter. No environment variables are required. This is how
+https://flowgenix-five.vercel.app/ is deployed, straight from `main`.
+
+To check a deployment end to end rather than by eye:
+
+```powershell
+$env:FLOWGENIX_BASE_URL="https://flowgenix-five.vercel.app"
+python tests/smoke_migration_api.py
+```
 
 Two hosting limits are worth knowing before you upload a very large flow:
 

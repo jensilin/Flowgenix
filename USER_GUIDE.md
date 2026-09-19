@@ -8,7 +8,8 @@ itself when you later import the result.
 
 - An exported NiFi flow: a 1.x **template** (`.xml`) or a **flow definition** (`.json`)
   from 1.x or 2.x
-- Either the hosted deployment, or Python 3.10+ to run it yourself
+- Either the hosted app at https://flowgenix-five.vercel.app/, or Python 3.10+
+  to run it yourself
 
 To run it yourself:
 
