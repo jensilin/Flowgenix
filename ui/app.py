@@ -10,15 +10,19 @@ import time
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-MIGRATIONS_DIR = REPO_ROOT / "migrations"
-_MIGRATION_EXTENSIONS = {".json", ".md", ".xml"}
+
+#: Migrated files are handed back inside the response and saved by the browser,
+#: so a request never depends on a file written by an earlier one. Point this at
+#: a writable directory to also keep a copy on the server; leave it unset on
+#: serverless hosts, where the filesystem is read-only and per-invocation.
+ARCHIVE_DIR = os.getenv("FLOWGENIX_ARCHIVE_DIR", "").strip()
 
 app = FastAPI(title="Flowgenix")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -173,7 +177,7 @@ def _run_migration_sync(
 
     emit({"type": "status", "message": "Generating the migrated flow…"})
     generation = generate_migrated_flow(doc, analysis, output_format=requested)
-    artifacts = _write_migration_artifacts(analysis, generation, body.output_name)
+    artifacts = _build_migration_artifacts(analysis, generation, body.output_name)
     emit(
         {
             "type": "generated",
@@ -184,59 +188,71 @@ def _run_migration_sync(
     )
 
 
-def _write_migration_artifacts(
+def _build_migration_artifacts(
     analysis: Any,
     generation: Any,
     output_name: str | None,
 ) -> dict[str, Any]:
+    """Build every downloadable file for one migration, contents included.
+
+    Nothing is kept on the server: the browser turns the text below into
+    downloads itself, which is what lets Flowgenix run on a host with no disk.
+    """
     from flow_document import FORMAT_XML_TEMPLATE
     from migration_engine import build_report, migrated_json_text, migrated_xml_text, render_report_markdown
 
-    MIGRATIONS_DIR.mkdir(exist_ok=True)
-    stem = _safe_migration_stem(
-        output_name or f"{Path(analysis.filename).stem}-nifi-{analysis.target_version}"
-    )
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    base = f"{stamp}-{stem}"
-
     # NiFi names an imported process group after the file it was uploaded from,
-    # so the flow is served under its own name rather than the stamped one we
-    # keep on disk to avoid collisions.
-    flow_stem = _safe_migration_stem(_root_group_name(generation) or stem)
-
-    flow_links: dict[str, Any] = {}
-    if generation.output_format == FORMAT_XML_TEMPLATE and generation.xml_text:
-        xml_path = MIGRATIONS_DIR / f"{base}.migrated.xml"
-        xml_path.write_text(migrated_xml_text(generation), encoding="utf-8")
-        flow_links["migratedXml"] = _artifact_link(xml_path, f"{flow_stem}.xml")
-    else:
-        json_path = MIGRATIONS_DIR / f"{base}.migrated.json"
-        json_path.write_text(migrated_json_text(generation), encoding="utf-8")
-        flow_links["migratedFlow"] = _artifact_link(json_path, f"{flow_stem}.json")
-
+    # so the flow is named after the group inside it.
+    stem = _safe_migration_stem(
+        output_name
+        or _root_group_name(generation)
+        or f"{Path(analysis.filename).stem}-nifi-{analysis.target_version}"
+    )
     report = build_report(analysis, generation)
-    report_json_path = MIGRATIONS_DIR / f"{base}.report.json"
-    report_json_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    report_md_path = MIGRATIONS_DIR / f"{base}.report.md"
-    report_md_path.write_text(render_report_markdown(report), encoding="utf-8")
 
+    artifacts: dict[str, Any] = {}
+    if generation.output_format == FORMAT_XML_TEMPLATE and generation.xml_text:
+        artifacts["migratedXml"] = _artifact(
+            f"{stem}.xml", "application/xml", migrated_xml_text(generation)
+        )
+    else:
+        artifacts["migratedFlow"] = _artifact(
+            f"{stem}.json", "application/json", migrated_json_text(generation)
+        )
+    artifacts["reportMarkdown"] = _artifact(
+        f"{stem}-report.md", "text/markdown", render_report_markdown(report)
+    )
+    # The JSON report is the report object itself. The browser serialises it for
+    # download rather than carrying a second copy of it over the wire.
+    artifacts["report"] = report
+
+    _archive_migration(stem, artifacts, report)
+    return artifacts
+
+
+def _artifact(name: str, media_type: str, text: str) -> dict[str, Any]:
     return {
-        **flow_links,
-        "reportJson": _artifact_link(report_json_path),
-        "reportMarkdown": _artifact_link(report_md_path),
-        "report": report,
+        "name": name,
+        "mediaType": media_type,
+        "size": len(text.encode("utf-8")),
+        "text": text,
     }
 
 
-def _artifact_link(path: Path, download_name: str | None = None) -> dict[str, Any]:
-    url = f"/api/migration/download?name={path.name}"
-    if download_name and download_name != path.name:
-        url += f"&as={download_name}"
-    return {
-        "name": download_name or path.name,
-        "size": path.stat().st_size,
-        "downloadUrl": url,
-    }
+def _archive_migration(stem: str, artifacts: dict[str, Any], report: dict[str, Any]) -> None:
+    if not ARCHIVE_DIR:
+        return
+    directory = Path(ARCHIVE_DIR)
+    directory.mkdir(parents=True, exist_ok=True)
+    base = f"{time.strftime('%Y%m%d-%H%M%S')}-{stem}"
+    for key in ("migratedFlow", "migratedXml", "reportMarkdown"):
+        item = artifacts.get(key)
+        if item:
+            suffix = Path(item["name"]).name[len(stem) :]
+            (directory / f"{base}{suffix}").write_text(item["text"], encoding="utf-8")
+    (directory / f"{base}-report.json").write_text(
+        json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def _root_group_name(generation: Any) -> str:
@@ -245,34 +261,6 @@ def _root_group_name(generation: Any) -> str:
         return ""
     root = migrated.get("flowContents") or migrated.get("rootGroup") or migrated
     return (root.get("name") or "").strip() if isinstance(root, dict) else ""
-
-
-@app.get("/api/migration/download")
-async def download_migration(
-    name: str, as_name: str | None = Query(default=None, alias="as")
-) -> FileResponse:
-    safe = _safe_migration_name(name)
-    path = (MIGRATIONS_DIR / safe).resolve()
-    if not str(path).startswith(str(MIGRATIONS_DIR.resolve())) or not path.is_file():
-        raise HTTPException(status_code=404, detail="Migration artifact not found")
-    media = {
-        ".json": "application/json",
-        ".md": "text/markdown",
-        ".xml": "application/xml",
-    }.get(path.suffix.lower(), "application/octet-stream")
-    return FileResponse(path, media_type=media, filename=_safe_migration_name(as_name or path.name))
-
-
-def _safe_migration_name(name: str) -> str:
-    cleaned = (name or "").replace("\\", "/").lstrip("/")
-    if "/" in cleaned or ".." in cleaned:
-        raise HTTPException(status_code=400, detail="Invalid artifact name")
-    if Path(cleaned).suffix.lower() not in _MIGRATION_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Only {', '.join(sorted(_MIGRATION_EXTENSIONS))} artifacts are served",
-        )
-    return cleaned
 
 
 def _safe_migration_stem(name: str) -> str:

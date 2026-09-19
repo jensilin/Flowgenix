@@ -156,13 +156,17 @@ def main() -> int:
         for key, label in (
             ("migratedFlow", "migrated flow"),
             ("reportMarkdown", "markdown report"),
-            ("reportJson", "json report"),
         ):
-            status, content = get(artifacts[key]["downloadUrl"])
-            check(f"download {label}", status == 200 and len(content) > 100, f"{len(content)} bytes")
+            content = artifacts.get(key, {}).get("text", "")
+            check(f"{label} arrives with the response", len(content) > 100, f"{len(content)} bytes")
+        check("json report travels as an object", isinstance(artifacts.get("report"), dict))
+        check(
+            "the flow is named after its process group",
+            artifacts["migratedFlow"]["name"].endswith(".json"),
+            artifacts["migratedFlow"]["name"],
+        )
 
-        status, flow_text = get(artifacts["migratedFlow"]["downloadUrl"])
-        flow = json.loads(flow_text)
+        flow = json.loads(artifacts["migratedFlow"]["text"])
         procs = flow["flowContents"]["processors"]
         reshape = next(p for p in procs if p["name"] == "Reshape Records")
         check("Jolt property renamed in output", "Jolt Transform" in reshape["properties"])
@@ -172,7 +176,7 @@ def main() -> int:
         check("removed processor marked in output", "MANUAL REVIEW REQUIRED" in fetch.get("comments", ""))
         check("provenance stamped", "Flowgenix migration" in flow["flowContents"].get("comments", ""))
 
-        status, md = get(artifacts["reportMarkdown"]["downloadUrl"])
+        md = artifacts["reportMarkdown"]["text"]
         check("report names both versions", "1.25.0" in md and "2.11.0" in md)
         check("report has a manual-review section", "## Manual intervention required" in md)
 
@@ -194,18 +198,16 @@ def main() -> int:
         xml_art = generated_xml["artifacts"].get("migratedXml") or generated_xml["artifacts"].get("migratedFlow")
         check("XML artifact is present", xml_art is not None, str(list(generated_xml["artifacts"])))
         if xml_art:
-            status, xml_out = get(xml_art["downloadUrl"])
+            xml_out = xml_art["text"]
             check(
-                "download migrated XML",
-                status == 200 and "<template" in xml_out and "encoding-version" in xml_out,
-                f"{status} {len(xml_out)} bytes",
+                "migrated XML arrives with the response",
+                "<template" in xml_out and "encoding-version" in xml_out,
+                f"{len(xml_out)} bytes",
             )
 
-    # 9. Path traversal on the artifact download is refused
-    status, _ = get("/api/migration/download?name=../pytest.ini")
-    check("traversal refused", status == 400, str(status))
-    status, _ = get("/api/migration/download?name=nope.json")
-    check("missing artifact 404s", status == 404, str(status))
+    # 9. Nothing is stored server-side between requests
+    status, _ = get("/api/migration/download?name=anything.json")
+    check("no server-side artifact store", status == 404, str(status))
 
     # 10. Index still responds
     status, _ = get("/")

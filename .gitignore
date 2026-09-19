@@ -12,15 +12,17 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Local runtime and generated artifacts
-data/
+# Local migration output and logs
 migrations/
+*.log
+
+# Local scratch left over from earlier, non-migration work
+data/
 deck-assets/
 deck-preview/
+flows/
 input/
-*.log
-*.pptx
+samples/
 
-# Generated flow specs (keep the directory and hand-written templates)
-flows/*.json
-!flows/.gitkeep
+# Vercel CLI
+.vercel/

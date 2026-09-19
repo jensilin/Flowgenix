@@ -83,6 +83,20 @@ def test_migration_css_classes_used_by_js_are_styled(js, css):
         assert f".{name}" in css, f"class .{name} is emitted by app.js but never styled"
 
 
+def test_downloads_are_built_in_the_browser_not_fetched_from_the_server(js, server):
+    """The app has to survive a host with no disk between two requests."""
+    assert "URL.createObjectURL" in js.split("function artifactAnchor(", 1)[1]
+    assert "downloadUrl" not in js
+    assert "/api/migration/download" not in server
+    assert "MIGRATIONS_DIR" not in server
+
+
+def test_generated_artifacts_carry_their_own_contents(server):
+    builder = server.split("def _build_migration_artifacts(", 1)[1].split("\ndef ", 1)[0]
+    for key in ("migratedFlow", "migratedXml", "reportMarkdown", "report"):
+        assert f'"{key}"' in builder, f"the generate response no longer offers {key}"
+
+
 def test_upload_uses_text_in_json_transport(js):
     reader = js.split("async function readMigrationUpload(", 1)[1].split("\nasync function ", 1)[0]
     assert "await file.text()" in reader

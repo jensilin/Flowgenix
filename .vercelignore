@@ -1,0 +1,24 @@
+# Only the migration app and its static assets belong in the deployment.
+.git
+.venv
+venv
+__pycache__/
+*.pyc
+.pytest_cache/
+.cursor/
+
+# Local-only runtime output and developer tooling
+migrations/
+data/
+deck-assets/
+deck-preview/
+flows/
+input/
+samples/
+tests/
+Dockerfile
+.dockerignore
+script.sh
+README.md
+USER_GUIDE.md
+requirements-dev.txt

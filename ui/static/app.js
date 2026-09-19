@@ -42,6 +42,7 @@ const OUTCOME_LABELS = {
 let migrationUpload = null;
 let migrationVersions = [];
 let logLines = [];
+let artifactUrls = [];
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
@@ -121,6 +122,8 @@ function selectedOutputFormat() {
 }
 
 function resetMigrationReport() {
+  for (const url of artifactUrls) URL.revokeObjectURL(url);
+  artifactUrls = [];
   reportEl.classList.add("hidden");
   statsEl.innerHTML = "";
   concernsEl.innerHTML = "";
@@ -286,15 +289,26 @@ function renderMigrationArtifacts(artifacts) {
   if (artifacts.reportMarkdown) {
     links.push(artifactAnchor(artifacts.reportMarkdown, "Report (Markdown)"));
   }
-  if (artifacts.reportJson) {
-    links.push(artifactAnchor(artifacts.reportJson, "Report (JSON)"));
+  if (artifacts.report) {
+    const name = (artifacts.reportMarkdown?.name || "migration-report.md").replace(/\.md$/, ".json");
+    links.push(
+      artifactAnchor(
+        { name, mediaType: "application/json", text: JSON.stringify(artifacts.report, null, 2) },
+        "Report (JSON)"
+      )
+    );
   }
   artifactsEl.classList.toggle("hidden", links.length === 0);
   artifactsEl.innerHTML = links.join("");
 }
 
+// The server keeps nothing on disk, so each file arrives as text and becomes a
+// download here.
 function artifactAnchor(item, label) {
-  return `<a href="${item.downloadUrl}">${label} · ${item.name}</a>`;
+  const url = URL.createObjectURL(new Blob([item.text], { type: item.mediaType }));
+  artifactUrls.push(url);
+  const name = escapeHtml(item.name);
+  return `<a href="${url}" download="${name}">${label} · ${name}</a>`;
 }
 
 function escapeHtml(value) {

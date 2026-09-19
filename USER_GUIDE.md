@@ -1,23 +1,29 @@
 # Flowgenix user guide
 
 Flowgenix migrates Apache NiFi flows between versions and between **JSON** and
-**XML**. It runs entirely on your machine. You do not need a live NiFi, a Cursor
-API key, or Java — those belong to NiFi itself when you later import the result.
+**XML**. You do not need a live NiFi, an API key, or Java — those belong to NiFi
+itself when you later import the result.
 
 ## What you need
 
-- Python 3.10+
 - An exported NiFi flow: a 1.x **template** (`.xml`) or a **flow definition** (`.json`)
   from 1.x or 2.x
+- Either the hosted deployment, or Python 3.10+ to run it yourself
 
-Install and start:
+To run it yourself:
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 python -m ui.app
 ```
 
 Open http://127.0.0.1:7860/.
+
+Nothing is uploaded to a third party and nothing is kept after the request: your
+flow is parsed in memory, converted, and handed straight back to the browser,
+which turns it into the files you download. On the hosted deployment that also
+means a size ceiling — templates and migrated flows must each stay under 4.5 MB.
+Run it locally for anything larger.
 
 ## Workflow
 
@@ -32,7 +38,9 @@ Open http://127.0.0.1:7860/.
      *Upload flow definition* / Registry.
    - **XML template** — only when the target is 1.x. NiFi 2.0 removed templates.
 5. **Analyze** to see compatibility without writing files.
-6. **Generate migrated flow** to download the converted file plus a report.
+6. **Generate migrated flow** to download the converted file plus a report. The
+   file is named after the process group inside it, which is the name NiFi will
+   suggest for the imported group.
 
 ## Version dialects (2.6 and XML tags)
 
@@ -85,9 +93,16 @@ import behaves.
 Review every `[MANUAL REVIEW REQUIRED]` comment before starting processors.
 Migrated components are imported stopped.
 
-## Tests and Docker
+## Running it elsewhere
 
 ```powershell
-python -m pytest
-./script.sh          # container on :7860, artifacts in ./migrations
+python -m pytest                       # unit and wiring tests
+python tests/smoke_migration_api.py    # end-to-end, against a running server
 ```
+
+```bash
+./script.sh     # container on :7860, with a copy of each migration in ./migrations
+vercel --prod   # deploy the same app as one Python function
+```
+
+See the README for the deployment layout and the hosted size limits.
