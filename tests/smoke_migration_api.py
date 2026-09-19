@@ -1,10 +1,11 @@
 """Manual end-to-end check of the migration HTTP endpoints against a running server.
 
-Not part of the pytest suite (no `test_` prefix): it needs a live Flowgenix on
-FLOWGENIX_PORT. Run it after starting the server to confirm the wiring between
-the browser, the endpoints, and the engine.
+Not part of the pytest suite (no `test_` prefix): it needs a live Flowgenix.
+Run it after starting the server, or against a deployment, to confirm the wiring
+between the browser, the endpoints, and the engine.
 
     python tests/smoke_migration_api.py
+    FLOWGENIX_BASE_URL=https://example.vercel.app python tests/smoke_migration_api.py
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ import sys
 import urllib.request
 from pathlib import Path
 
-BASE = f"http://127.0.0.1:{os.getenv('FLOWGENIX_PORT') or os.getenv('FLOW_STUDIO_PORT', '7860')}"
+BASE = (os.getenv("FLOWGENIX_BASE_URL") or "").rstrip("/") or (
+    f"http://127.0.0.1:{os.getenv('FLOWGENIX_PORT') or os.getenv('FLOW_STUDIO_PORT', '7860')}"
+)
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
