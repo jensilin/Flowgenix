@@ -35,6 +35,15 @@ convert `EVENT_DRIVEN` scheduling on 2.x. Removed processors (GetHTTP, PostHTTP,
 …) are **left unchanged** and marked for manual review — they are never silently
 replaced.
 
+Everything else is copied verbatim, so the imported canvas matches the one you
+exported: identifiers, positions, properties and their descriptors,
+`annotationData`, relationship flags, connection endpoints, and the
+process-group hierarchy. To confirm that on your own template:
+
+```powershell
+python tests/check_template_fidelity.py path\to\template.xml 2.6.0
+```
+
 ## Configuration
 
 | Variable | Default | Purpose |

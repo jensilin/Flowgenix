@@ -600,13 +600,9 @@ def _apply_to_node(
         )
         return
 
-    # Unverified but not known-broken: apply the safe changes and leave a note
-    # so whoever imports this flow knows what was and was not checked.
-    if finding.outcome == UNKNOWN:
-        comments = str(node.get("comments") or "")
-        node["comments"] = (
-            f"[NOT VERIFIED] {finding.explanation}\n\n{comments}".strip()
-        )
+    # A component the rule base does not cover is almost always fine. Saying so
+    # in the artifact would rewrite the comments of every ordinary processor, so
+    # the "not verified" list stays in the report where it does not alter the flow.
 
     # Type rename/replacement that the rule base considers safe.
     if finding.target_type and finding.outcome in (RENAMED, REPLACED):

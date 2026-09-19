@@ -56,7 +56,7 @@ Applied automatically when safe:
 - NAR bundle versions restamped to the target release
 - Known property renames (Jolt `Jolt Transformation DSL` → `Jolt Transform` on 2.x)
 - `EVENT_DRIVEN` scheduling → `TIMER_DRIVEN` on 2.x
-- Clearing the Variable Registry block when targeting 2.x (values are listed in
+- Dropping the Variable Registry block when targeting 2.x (values are listed in
   the report; `${var}` expressions are **not** rewritten, because that syntax is
   also valid attribute lookup)
 
@@ -65,7 +65,16 @@ Left unchanged and marked `[MANUAL REVIEW REQUIRED]`:
 - Removed processors such as GetHTTP / PostHTTP (suggested replacement: InvokeHTTP)
 - Script engines that 2.x dropped (Jython / JRuby on ExecuteScript)
 
-Uncovered types are copied through with a `[NOT VERIFIED]` comment.
+Types no rule covers are copied through untouched and listed as *not verified*
+in the report. The flow file itself is not annotated — most processors did not
+change between releases, and commenting every one of them would rewrite a flow
+that needed no edits.
+
+The migrated file is a faithful copy of the canvas otherwise: identifiers,
+positions, properties, property descriptors, `annotationData`, auto-terminated
+and retried relationships, connection endpoints, funnels, and the process-group
+hierarchy all survive. Processors arrive enabled but not running, exactly as an
+import behaves.
 
 ## Importing the result
 

@@ -86,6 +86,39 @@ def test_every_component_declares_identifier_type_and_position(xml_template_1x):
     assert seen > 0
 
 
+#: Every field `VersionedProcessor` declares. A processor carrying anything else
+#: is a processor the flow-definition importer can reject outright.
+PROCESSOR_KEYS = {
+    "identifier",
+    "instanceIdentifier",
+    "name",
+    "comments",
+    "position",
+    "type",
+    "bundle",
+    "properties",
+    "propertyDescriptors",
+    "annotationData",
+    "style",
+    "schedulingPeriod",
+    "schedulingStrategy",
+    "executionNode",
+    "penaltyDuration",
+    "yieldDuration",
+    "bulletinLevel",
+    "runDurationMillis",
+    "concurrentlySchedulableTaskCount",
+    "autoTerminatedRelationships",
+    "retryCount",
+    "retriedRelationships",
+    "backoffMechanism",
+    "maxBackoffPeriod",
+    "scheduledState",
+    "componentType",
+    "groupIdentifier",
+}
+
+
 def test_processors_carry_the_fields_nifi_requires(xml_template_1x):
     root = _migrate(xml_template_1x)["flowContents"]
     for proc in root["processors"]:
@@ -95,7 +128,6 @@ def test_processors_carry_the_fields_nifi_requires(xml_template_1x):
             "properties",
             "schedulingStrategy",
             "schedulingPeriod",
-            "relationships",
             "autoTerminatedRelationships",
             "scheduledState",
             "penaltyDuration",
@@ -104,6 +136,13 @@ def test_processors_carry_the_fields_nifi_requires(xml_template_1x):
         ):
             assert field in proc, f"processor {proc['name']} is missing {field}"
         assert set(proc["bundle"]) == {"group", "artifact", "version"}
+
+
+def test_processors_carry_nothing_outside_the_model(xml_template_1x):
+    for group in _walk(_migrate(xml_template_1x)["flowContents"]):
+        for proc in group.get("processors") or []:
+            extra = set(proc) - PROCESSOR_KEYS
+            assert not extra, f"processor {proc['name']} carries unknown field(s): {sorted(extra)}"
 
 
 def test_ports_declare_their_direction(xml_template_1x):
@@ -215,17 +254,79 @@ def test_positions_are_preserved_from_the_template():
     assert proc["position"] == {"x": 1344.0, "y": 136.0}
 
 
-def test_auto_terminate_flags_come_from_the_relationships_block():
+def test_auto_terminate_and_retry_flags_come_from_the_relationships_block():
+    """`VersionedProcessor` has no `relationships` field: the template's flags
+    split into `autoTerminatedRelationships` and `retriedRelationships`."""
     xml = """<template encoding-version="1.3"><name>t</name><snippet>
       <processors><id>p1</id><name>P</name><type>org.apache.nifi.X</type>
-        <relationships><name>failure</name><autoTerminate>true</autoTerminate></relationships>
-        <relationships><name>success</name><autoTerminate>false</autoTerminate></relationships>
+        <relationships><name>failure</name><autoTerminate>true</autoTerminate>
+          <retry>false</retry></relationships>
+        <relationships><name>retryable</name><autoTerminate>false</autoTerminate>
+          <retry>true</retry></relationships>
+        <relationships><name>success</name><autoTerminate>false</autoTerminate>
+          <retry>false</retry></relationships>
       </processors>
     </snippet></template>"""
     proc = _migrate(xml)["flowContents"]["processors"][0]
     assert proc["autoTerminatedRelationships"] == ["failure"]
-    names = {r["name"]: r["autoTerminate"] for r in proc["relationships"]}
-    assert names == {"failure": True, "success": False}
+    assert proc["retriedRelationships"] == ["retryable"]
+    assert "relationships" not in proc
+
+
+def test_annotation_data_survives_the_conversion():
+    """UpdateAttribute keeps its rule engine in annotationData; losing it
+    silently guts the processor."""
+    xml = """<template encoding-version="1.3"><name>t</name><snippet>
+      <processors><id>p1</id><name>P</name><type>org.apache.nifi.X</type>
+        <config><annotationData>&lt;rules&gt;&lt;/rules&gt;</annotationData></config>
+      </processors>
+    </snippet></template>"""
+    proc = _migrate(xml)["flowContents"]["processors"][0]
+    assert proc["annotationData"] == "<rules></rules>"
+
+
+def test_property_descriptors_carry_no_fields_outside_the_model():
+    """A template descriptor also lists `<dependencies>`, which NiFi recomputes.
+    Copying it in adds a field the flow-definition importer does not know."""
+    xml = """<template encoding-version="1.3"><name>t</name><snippet>
+      <processors><id>p1</id><name>P</name><type>org.apache.nifi.X</type>
+        <config><descriptors><entry><key>Header File</key><value>
+          <name>Header File</name>
+          <dependencies>
+            <dependentValues>Text</dependentValues>
+            <propertyName>Delimiter Strategy</propertyName>
+          </dependencies>
+        </value></entry></descriptors></config>
+      </processors>
+    </snippet></template>"""
+    desc = _migrate(xml)["flowContents"]["processors"][0]["propertyDescriptors"]["Header File"]
+    assert set(desc) == {
+        "name",
+        "displayName",
+        "identifiesControllerService",
+        "sensitive",
+        "dynamic",
+    }
+
+
+def test_variables_are_dropped_for_2x_but_kept_for_1x():
+    """The Variable Registry — and the group's `variables` field — went away in 2.0."""
+    xml = """<template encoding-version="1.3"><name>t</name><snippet>
+      <processGroups><id>g1</id><name>G</name>
+        <variables><name>outputRoot</name><value>/data</value></variables>
+        <contents><processors><id>p1</id><name>P</name>
+          <type>org.apache.nifi.X</type></processors></contents>
+      </processGroups>
+    </snippet></template>"""
+    assert "variables" not in _migrate(xml, "2.6.0")["flowContents"]
+    assert _migrate(xml, "1.25.0")["flowContents"]["variables"] == {"outputRoot": "/data"}
+
+
+def test_the_root_group_has_no_parent():
+    xml = """<template encoding-version="1.3"><name>t</name><snippet>
+      <processors><id>p1</id><name>P</name><type>org.apache.nifi.X</type></processors>
+    </snippet></template>"""
+    assert "groupIdentifier" not in _migrate(xml)["flowContents"]
 
 
 def test_bundle_version_is_restamped_to_the_target(xml_template_1x):

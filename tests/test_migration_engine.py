@@ -181,16 +181,18 @@ def test_unverified_does_not_block_a_deterministic_property_rename():
     assert "Jolt Transformation DSL" not in node["properties"]
 
 
-def test_unverified_component_carries_a_not_verified_note_in_the_output():
+def test_unverified_component_is_reported_but_left_alone_in_the_output():
+    """Most processors have no rule because nothing about them changed. Stamping
+    that on each one rewrites the comments of an entire ordinary flow, so it
+    belongs in the report, not in the artifact."""
     doc = parse_flow_file(_UNCOVERED_FLOW, "f.json")
     analysis = analyze_migration(doc, "1.25.0", "2.11.0")
     result = generate_migrated_flow(doc, analysis)
 
     node = result.migrated["flowContents"]["processors"][0]
-    assert node["comments"].startswith("[NOT VERIFIED]")
-    # A softer note than the manual-review banner, and not counted as skipped.
-    assert "MANUAL REVIEW REQUIRED" not in node["comments"]
+    assert not node.get("comments")
     assert not result.skipped
+    assert any(f.outcome == "unknown" for f in analysis.findings)
 
 
 # --- Generation: the uploaded file is never mutated ---------------------------
@@ -297,12 +299,13 @@ def test_every_applied_change_is_recorded_with_a_reason(xml_template_1x):
         assert "reason" in change
 
 
-def test_variable_registry_block_is_cleared_and_reported(json_flow_1x):
+def test_variable_registry_block_is_dropped_and_reported(json_flow_1x):
+    """2.0 removed the Variable Registry, and with it the group's `variables`."""
     doc = parse_flow_file(json_flow_1x, "f.json")
     analysis = analyze_migration(doc, "1.23.2", "2.11.0")
     result = generate_migrated_flow(doc, analysis)
 
-    assert result.migrated["flowContents"]["variables"] == {}
+    assert "variables" not in result.migrated["flowContents"]
     marker = next(m for m in result.manual_markers if m["reason"] == "variable_registry_removed")
     assert "ingestHost" in marker["detail"]
 

@@ -60,7 +60,8 @@ JSON_GROUP_BASE: frozenset[str] = frozenset(
         "parameterContextName",
     }
 )
-JSON_GROUP_2X: frozenset[str] = JSON_GROUP_BASE | frozenset(
+# 2.0 removed the Variable Registry, so `variables` is not part of a 2.x group.
+JSON_GROUP_2X: frozenset[str] = (JSON_GROUP_BASE - frozenset({"variables"})) | frozenset(
     {"executionEngine", "statelessFlowTimeout"}
 )
 JSON_GROUP_AFTER_26: frozenset[str] = JSON_GROUP_2X | frozenset(

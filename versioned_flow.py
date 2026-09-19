@@ -77,7 +77,7 @@ def snapshot_from_xml_template(
         contents.update(
             {
                 "identifier": root_id,
-                "instanceIdentifier": _new_id(),
+                "instanceIdentifier": root_id,
                 "name": flow_name,
                 "componentType": "PROCESS_GROUP",
                 "position": dict(_DEFAULT_POSITION),
@@ -85,6 +85,9 @@ def snapshot_from_xml_template(
                 "flowFileOutboundPolicy": "STREAM_WHEN_AVAILABLE",
             }
         )
+
+    # The root of a flow definition has no parent.
+    contents.pop("groupIdentifier", None)
 
     if comments:
         existing = contents.get("comments") or ""
@@ -126,7 +129,7 @@ def _group_to_versioned(
     node.update(
         {
             "identifier": group_id,
-            "instanceIdentifier": _new_id(),
+            "instanceIdentifier": group_id,
             "name": _text(group, "name") or "group",
             "comments": _text(group, "comments"),
             "componentType": "PROCESS_GROUP",
@@ -212,33 +215,38 @@ def _processor_to_versioned(
 ) -> dict[str, Any]:
     config = proc.find("config")
     properties = _properties(config)
+    identifier = _text(proc, "id") or _new_id()
 
-    # `<relationships>` carries the authoritative auto-terminate flags; the
-    # separate `<autoTerminatedRelationships>` list is not always present.
-    relationships = []
-    auto_terminated = []
+    # A template's `<relationships>` block carries the auto-terminate and retry
+    # flags per relationship. `VersionedProcessor` has no `relationships` field —
+    # it splits the same information across two name sets.
+    auto_terminated: list[str] = []
+    retried: list[str] = []
     for rel in proc.findall("relationships"):
         name = _text(rel, "name")
         if not name:
             continue
-        auto = _text(rel, "autoTerminate").lower() == "true"
-        relationships.append({"name": name, "autoTerminate": auto, "retry": False})
-        if auto:
+        if _text(rel, "autoTerminate").lower() == "true":
             auto_terminated.append(name)
+        if _text(rel, "retry").lower() == "true":
+            retried.append(name)
     if config is not None:
         for rel in config.findall("autoTerminatedRelationships"):
             if rel.text and rel.text not in auto_terminated:
                 auto_terminated.append(rel.text)
 
     return {
-        "identifier": _text(proc, "id") or _new_id(),
-        "instanceIdentifier": _new_id(),
+        "identifier": identifier,
+        "instanceIdentifier": identifier,
         "name": _text(proc, "name"),
         "comments": _text(config, "comments") if config is not None else "",
         "type": _text(proc, "type"),
         "bundle": _bundle(proc, target_version),
         "properties": properties,
         "propertyDescriptors": _property_descriptors(config),
+        # UpdateAttribute's rule engine and several scripted processors keep
+        # their real configuration here, so dropping it silently guts the flow.
+        "annotationData": _text(config, "annotationData") if config is not None else "",
         "style": _style(proc),
         "schedulingPeriod": _text(config, "schedulingPeriod") or "0 sec",
         "schedulingStrategy": _text(config, "schedulingStrategy") or "TIMER_DRIVEN",
@@ -251,9 +259,8 @@ def _processor_to_versioned(
             _text(config, "concurrentlySchedulableTaskCount"), 1
         ),
         "autoTerminatedRelationships": auto_terminated,
-        "relationships": relationships,
         "retryCount": _int(_text(config, "retryCount"), 10),
-        "retriedRelationships": [],
+        "retriedRelationships": retried,
         "backoffMechanism": _text(config, "backoffMechanism") or "PENALIZE_FLOWFILE",
         "maxBackoffPeriod": _text(config, "maxBackoffPeriod") or "10 mins",
         "componentType": "PROCESSOR",
@@ -268,15 +275,17 @@ def _processor_to_versioned(
 
 
 def _service_to_versioned(svc: ET.Element, target_version: str, group_id: str) -> dict[str, Any]:
+    identifier = _text(svc, "id") or _new_id()
     return {
-        "identifier": _text(svc, "id") or _new_id(),
-        "instanceIdentifier": _new_id(),
+        "identifier": identifier,
+        "instanceIdentifier": identifier,
         "name": _text(svc, "name"),
         "comments": _text(svc, "comments"),
         "type": _text(svc, "type"),
         "bundle": _bundle(svc, target_version),
         "properties": _properties(svc),
         "propertyDescriptors": _property_descriptors(svc),
+        "annotationData": _text(svc, "annotationData"),
         "controllerServiceApis": [],
         "componentType": "CONTROLLER_SERVICE",
         "groupIdentifier": group_id,
@@ -292,9 +301,10 @@ def _connection_to_versioned(conn: ET.Element, group_id: str) -> dict[str, Any]:
     for bend in conn.findall("bends"):
         bends.append({"x": _float(_text(bend, "x")), "y": _float(_text(bend, "y"))})
 
+    identifier = _text(conn, "id") or _new_id()
     return {
-        "identifier": _text(conn, "id") or _new_id(),
-        "instanceIdentifier": _new_id(),
+        "identifier": identifier,
+        "instanceIdentifier": identifier,
         "name": _text(conn, "name"),
         "source": _connectable(conn.find("source"), group_id),
         "destination": _connectable(conn.find("destination"), group_id),
@@ -330,9 +340,10 @@ def _connectable(node: ET.Element | None, group_id: str) -> dict[str, Any]:
 
 
 def _port_to_versioned(port: ET.Element, group_id: str, port_type: str) -> dict[str, Any]:
+    identifier = _text(port, "id") or _new_id()
     return {
-        "identifier": _text(port, "id") or _new_id(),
-        "instanceIdentifier": _new_id(),
+        "identifier": identifier,
+        "instanceIdentifier": identifier,
         "name": _text(port, "name"),
         "comments": _text(port, "comments"),
         "type": port_type,
@@ -348,9 +359,10 @@ def _port_to_versioned(port: ET.Element, group_id: str, port_type: str) -> dict[
 
 
 def _funnel_to_versioned(funnel: ET.Element, group_id: str) -> dict[str, Any]:
+    identifier = _text(funnel, "id") or _new_id()
     return {
-        "identifier": _text(funnel, "id") or _new_id(),
-        "instanceIdentifier": _new_id(),
+        "identifier": identifier,
+        "instanceIdentifier": identifier,
         "componentType": "FUNNEL",
         "groupIdentifier": group_id,
         "position": _position(funnel),
@@ -358,9 +370,10 @@ def _funnel_to_versioned(funnel: ET.Element, group_id: str) -> dict[str, Any]:
 
 
 def _label_to_versioned(label: ET.Element, group_id: str) -> dict[str, Any]:
+    identifier = _text(label, "id") or _new_id()
     return {
-        "identifier": _text(label, "id") or _new_id(),
-        "instanceIdentifier": _new_id(),
+        "identifier": identifier,
+        "instanceIdentifier": identifier,
         "label": _text(label, "label"),
         "width": _float(_text(label, "width")) or 150.0,
         "height": _float(_text(label, "height")) or 50.0,
@@ -416,7 +429,13 @@ def _property_value(value_node: ET.Element | None) -> Any:
 
 
 def _property_descriptors(node: ET.Element | None) -> dict[str, Any]:
-    """Copy template `<descriptors>` into the VersionedPropertyDescriptor map."""
+    """Copy template `<descriptors>` into the VersionedPropertyDescriptor map.
+
+    Only the fields that model has are emitted. A template descriptor also
+    carries `<dependencies>`, which NiFi recomputes from the processor's own
+    definition; copying it into the flow definition adds a field the importer
+    does not know.
+    """
     out: dict[str, Any] = {}
     if node is None:
         return out
@@ -425,34 +444,18 @@ def _property_descriptors(node: ET.Element | None) -> dict[str, Any]:
         return out
     for entry in descriptors.findall("entry"):
         key = _text(entry, "key")
-        value = entry.find("value")
         if not key:
             continue
-        name = _text(value, "name") if value is not None else key
-        cs = _text(value, "identifiesControllerService") if value is not None else ""
-        if cs.lower() in ("", "false"):
-            identifies: Any = False
-        elif cs.lower() == "true":
-            identifies = True
-        else:
-            identifies = cs
-        desc: dict[str, Any] = {
-            "name": name or key,
-            "displayName": name or key,
-            "identifiesControllerService": identifies,
-            "sensitive": _text(value, "sensitive").lower() == "true" if value is not None else False,
-            "dynamic": _text(value, "dynamic").lower() == "true" if value is not None else False,
+        value = entry.find("value")
+        name = _text(value, "name") or key
+        out[key] = {
+            "name": name,
+            "displayName": _text(value, "displayName") or name,
+            "identifiesControllerService": _text(value, "identifiesControllerService").lower()
+            == "true",
+            "sensitive": _text(value, "sensitive").lower() == "true",
+            "dynamic": _text(value, "dynamic").lower() == "true",
         }
-        deps = []
-        if value is not None:
-            for dep in value.findall("dependencies"):
-                prop_name = _text(dep, "propertyName")
-                values = [v.text for v in dep.findall("dependentValues") if v.text]
-                if prop_name:
-                    deps.append({"propertyName": prop_name, "dependentValues": values})
-        if deps:
-            desc["dependencies"] = deps
-        out[key] = desc
     return out
 
 
@@ -631,15 +634,22 @@ def _processor_to_xml(proc: dict[str, Any], target_version: str) -> ET.Element:
     comments = str(proc.get("comments") or "")
     if comments:
         _set_text(config, "comments", comments)
+    annotation = str(proc.get("annotationData") or "")
+    if annotation:
+        _set_text(config, "annotationData", annotation)
     _properties_xml(config, proc.get("properties"))
-    for rel in proc.get("autoTerminatedRelationships") or []:
-        _set_text(config, "autoTerminatedRelationships", str(rel))
-    for rel in proc.get("relationships") or []:
-        if not isinstance(rel, dict):
-            continue
+
+    # A template lists every relationship once, with its flags; the flow
+    # definition splits them into two name sets. Rebuild the template form.
+    auto = [str(r) for r in proc.get("autoTerminatedRelationships") or []]
+    retried = [str(r) for r in proc.get("retriedRelationships") or []]
+    for rel in auto:
+        _set_text(config, "autoTerminatedRelationships", rel)
+    for name in auto + [r for r in retried if r not in auto]:
         rel_el = ET.SubElement(node, "relationships")
-        _set_text(rel_el, "name", str(rel.get("name") or ""))
-        _set_text(rel_el, "autoTerminate", "true" if rel.get("autoTerminate") else "false")
+        _set_text(rel_el, "name", name)
+        _set_text(rel_el, "autoTerminate", "true" if name in auto else "false")
+        _set_text(rel_el, "retry", "true" if name in retried else "false")
     _set_text(node, "state", _xml_state(proc.get("scheduledState")))
     return node
 
