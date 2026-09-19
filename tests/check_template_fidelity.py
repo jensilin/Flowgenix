@@ -37,6 +37,7 @@ def xml_components(node: ET.Element, out: dict[str, list] | None = None) -> dict
                 "name": text(proc, "name"),
                 "type": text(proc, "type"),
                 "properties": props,
+                "position": xml_position(proc),
             }
         )
     for conn in xml_children(node, "connections"):
@@ -48,7 +49,7 @@ def xml_components(node: ET.Element, out: dict[str, list] | None = None) -> dict
             }
         )
     for funnel in xml_children(node, "funnels"):
-        out["funnels"].append({"id": text(funnel, "id")})
+        out["funnels"].append({"id": text(funnel, "id"), "position": xml_position(funnel)})
     for group in xml_children(node, "processGroups"):
         contents = group.find("contents")
         xml_components(contents if contents is not None else group, out)
@@ -64,6 +65,7 @@ def json_components(group: dict, out: dict[str, list] | None = None) -> dict[str
                 "name": proc["name"],
                 "type": proc["type"],
                 "properties": proc.get("properties") or {},
+                "position": json_position(proc),
             }
         )
     for conn in group.get("connections") or []:
@@ -75,7 +77,7 @@ def json_components(group: dict, out: dict[str, list] | None = None) -> dict[str
             }
         )
     for funnel in group.get("funnels") or []:
-        out["funnels"].append({"id": funnel["identifier"]})
+        out["funnels"].append({"id": funnel["identifier"], "position": json_position(funnel)})
     for child in group.get("processGroups") or []:
         json_components(child, out)
     return out
@@ -86,6 +88,18 @@ def text(node: ET.Element | None, child: str) -> str:
         return ""
     found = node.find(child)
     return (found.text or "").strip() if found is not None and found.text else ""
+
+
+def xml_position(node: ET.Element) -> tuple[int, int]:
+    pos = node.find("position")
+    if pos is None:
+        return (0, 0)
+    return (round(float(text(pos, "x") or 0)), round(float(text(pos, "y") or 0)))
+
+
+def json_position(node: dict) -> tuple[int, int]:
+    pos = node.get("position") or {}
+    return (round(float(pos.get("x") or 0)), round(float(pos.get("y") or 0)))
 
 
 def walk_groups(group: dict, out: list | None = None) -> list:
@@ -143,6 +157,23 @@ def main() -> int:
             if k in out["properties"] and (out["properties"][k] or None) != (v or None)
         ]
         check(f"processor {proc['name']} keeps property values", not differing, str(differing))
+        check(
+            f"processor {proc['name']} keeps its canvas position",
+            out["position"] == proc["position"],
+            f"xml={proc['position']} json={out['position']}",
+        )
+
+    funnel_by_id = {f["id"]: f for f in produced["funnels"]}
+    for funnel in source["funnels"]:
+        out = funnel_by_id.get(funnel["id"])
+        if out is None:
+            check(f"funnel {funnel['id'][:8]} survives", False, "missing from JSON")
+            continue
+        check(
+            f"funnel {funnel['id'][:8]} keeps its canvas position",
+            out["position"] == funnel["position"],
+            f"xml={funnel['position']} json={out['position']}",
+        )
 
     conn_by_id = {c["id"]: c for c in produced["connections"]}
     for conn in source["connections"]:
@@ -178,6 +209,17 @@ def main() -> int:
         if proc.get("groupIdentifier") not in group_ids
     ]
     check("every component belongs to a group in the file", not orphans, str(orphans[:3]))
+
+    # Funnels with nothing downstream are invalid in NiFi. They come in that way
+    # from the template, so report them rather than counting them as data loss.
+    sources = {c["source"] for c in source["connections"]}
+    stranded = [f["id"][:8] for f in source["funnels"] if f["id"] not in sources]
+    if stranded:
+        print()
+        print(
+            f"NOTE  the template itself has {len(stranded)} funnel(s) with no outgoing "
+            f"connection ({', '.join(stranded)}); NiFi will mark them invalid on import."
+        )
 
     print()
     if failures:

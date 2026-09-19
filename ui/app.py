@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -199,15 +199,20 @@ def _write_migration_artifacts(
     stamp = time.strftime("%Y%m%d-%H%M%S")
     base = f"{stamp}-{stem}"
 
+    # NiFi names an imported process group after the file it was uploaded from,
+    # so the flow is served under its own name rather than the stamped one we
+    # keep on disk to avoid collisions.
+    flow_stem = _safe_migration_stem(_root_group_name(generation) or stem)
+
     flow_links: dict[str, Any] = {}
     if generation.output_format == FORMAT_XML_TEMPLATE and generation.xml_text:
         xml_path = MIGRATIONS_DIR / f"{base}.migrated.xml"
         xml_path.write_text(migrated_xml_text(generation), encoding="utf-8")
-        flow_links["migratedXml"] = _artifact_link(xml_path)
+        flow_links["migratedXml"] = _artifact_link(xml_path, f"{flow_stem}.xml")
     else:
         json_path = MIGRATIONS_DIR / f"{base}.migrated.json"
         json_path.write_text(migrated_json_text(generation), encoding="utf-8")
-        flow_links["migratedFlow"] = _artifact_link(json_path)
+        flow_links["migratedFlow"] = _artifact_link(json_path, f"{flow_stem}.json")
 
     report = build_report(analysis, generation)
     report_json_path = MIGRATIONS_DIR / f"{base}.report.json"
@@ -223,16 +228,29 @@ def _write_migration_artifacts(
     }
 
 
-def _artifact_link(path: Path) -> dict[str, Any]:
+def _artifact_link(path: Path, download_name: str | None = None) -> dict[str, Any]:
+    url = f"/api/migration/download?name={path.name}"
+    if download_name and download_name != path.name:
+        url += f"&as={download_name}"
     return {
-        "name": path.name,
+        "name": download_name or path.name,
         "size": path.stat().st_size,
-        "downloadUrl": f"/api/migration/download?name={path.name}",
+        "downloadUrl": url,
     }
 
 
+def _root_group_name(generation: Any) -> str:
+    migrated = getattr(generation, "migrated", None)
+    if not isinstance(migrated, dict):
+        return ""
+    root = migrated.get("flowContents") or migrated.get("rootGroup") or migrated
+    return (root.get("name") or "").strip() if isinstance(root, dict) else ""
+
+
 @app.get("/api/migration/download")
-async def download_migration(name: str) -> FileResponse:
+async def download_migration(
+    name: str, as_name: str | None = Query(default=None, alias="as")
+) -> FileResponse:
     safe = _safe_migration_name(name)
     path = (MIGRATIONS_DIR / safe).resolve()
     if not str(path).startswith(str(MIGRATIONS_DIR.resolve())) or not path.is_file():
@@ -242,7 +260,7 @@ async def download_migration(name: str) -> FileResponse:
         ".md": "text/markdown",
         ".xml": "application/xml",
     }.get(path.suffix.lower(), "application/octet-stream")
-    return FileResponse(path, media_type=media, filename=path.name)
+    return FileResponse(path, media_type=media, filename=_safe_migration_name(as_name or path.name))
 
 
 def _safe_migration_name(name: str) -> str:
@@ -259,7 +277,7 @@ def _safe_migration_name(name: str) -> str:
 
 def _safe_migration_stem(name: str) -> str:
     stem = re.sub(r"[^A-Za-z0-9._-]+", "-", (name or "").strip()).strip("-._")
-    return (stem or "migrated-flow")[:80]
+    return (re.sub(r"\.{2,}", ".", stem) or "migrated-flow")[:80]
 
 
 def main() -> None:

@@ -245,6 +245,44 @@ def test_nested_groups_are_preserved_not_flattened():
     assert child["processors"][0]["groupIdentifier"] == child["identifier"]
 
 
+def test_sibling_groups_inside_the_promoted_group_all_survive():
+    """The real shape of a "download template" on an aggregation group: one
+    outer group holding several sibling groups plus components of its own."""
+    def child(name, gid, count):
+        procs = "".join(
+            f"<processors><id>{gid}-p{i}</id><name>{name}-P{i}</name>"
+            f"<type>org.apache.nifi.processors.standard.LogAttribute</type></processors>"
+            for i in range(count)
+        )
+        return f"<processGroups><id>{gid}</id><name>{name}</name><contents>{procs}</contents></processGroups>"
+
+    xml = (
+        '<template encoding-version="1.3"><groupId>parent-canvas</groupId>'
+        "<name>Aggregation</name><snippet>"
+        "<processGroups><id>outer</id><name>Aggregation</name><contents>"
+        + child("Zagreb", "zag", 4)
+        + child("Rijeka", "rij", 3)
+        + child("Splits", "spl", 2)
+        + "<funnels><id>f1</id></funnels>"
+        "<processors><id>put</id><name>PutFile</name>"
+        "<type>org.apache.nifi.processors.standard.PutFile</type></processors>"
+        "</contents></processGroups></snippet></template>"
+    )
+    root = _migrate(xml, "2.6.0")["flowContents"]
+
+    assert root["identifier"] == "outer"
+    assert [g["name"] for g in root["processGroups"]] == ["Zagreb", "Rijeka", "Splits"]
+    assert [len(g["processors"]) for g in root["processGroups"]] == [4, 3, 2]
+    assert [p["name"] for p in root["processors"]] == ["PutFile"]
+    assert len(root["funnels"]) == 1
+    for group in root["processGroups"]:
+        assert group["groupIdentifier"] == "outer"
+        assert all(p["groupIdentifier"] == group["identifier"] for p in group["processors"])
+
+    total = sum(len(g.get("processors") or []) for g in _walk(root))
+    assert total == 10
+
+
 def test_positions_are_preserved_from_the_template():
     xml = """<template encoding-version="1.3"><name>t</name><snippet>
       <processors><id>p1</id><name>P</name><type>org.apache.nifi.X</type>
