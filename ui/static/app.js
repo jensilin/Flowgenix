@@ -261,11 +261,13 @@ function renderMigrationReport(analysis) {
             .map((f) => {
               const type = (f.sourceType || "").split(".").pop();
               const label = OUTCOME_LABELS[f.outcome] || f.outcome;
+              // data-label carries the column heading into the stacked
+              // one-card-per-finding layout phones get.
               return `<tr>
-                <td>${escapeHtml(f.name || "")}</td>
-                <td><code>${escapeHtml(type)}</code></td>
-                <td><span class="outcome-tag outcome-${escapeHtml(f.outcome)}">${escapeHtml(label)}</span></td>
-                <td>${escapeHtml(f.explanation || f.recommendation || "")}</td>
+                <td data-label="Component">${escapeHtml(f.name || "")}</td>
+                <td data-label="Type"><code>${escapeHtml(type)}</code></td>
+                <td data-label="Outcome"><span class="outcome-tag outcome-${escapeHtml(f.outcome)}">${escapeHtml(label)}</span></td>
+                <td data-label="Notes">${escapeHtml(f.explanation || f.recommendation || "")}</td>
               </tr>`;
             })
             .join("")}

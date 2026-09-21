@@ -198,6 +198,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   border-radius: 12px;
   padding: 12px 14px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .log .status { color: var(--info); }
 .log .error { color: var(--err); }
@@ -233,6 +234,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   border-bottom: 1px solid var(--line);
   padding: 8px 6px;
   vertical-align: top;
+  /* Processor types are long single tokens and would otherwise push the
+     table wider than the screen. */
+  overflow-wrap: anywhere;
 }
 .outcome-tag {
   display: inline-block;
@@ -255,9 +259,52 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   padding: 8px 12px;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 640px) {
-  .shell { padding-top: 88px; }
+  .shell { padding: 76px 14px 56px; }
+  .card { padding: 16px 14px 14px; }
   .row { flex-direction: column; }
+  .dropzone { padding: 18px 14px; }
+  .migration-head, .log-head { flex-wrap: wrap; }
+  .log { max-height: 180px; }
+  .migration-stats { grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); }
+
+  /* Phone keyboards zoom the page in when a control's text is under 16px. */
+  select, button, input[type="text"] { font-size: 16px; }
+
+  /* Full-width controls are easier to hit than a wrapped row of pills. */
+  .actions { flex-direction: column; align-items: stretch; }
+  .actions button { width: 100%; padding: 13px 16px; }
+  .migration-artifacts a { flex: 1 1 100%; text-align: center; padding: 12px; }
+  .theme-toggle { top: 12px; right: 12px; }
+
+  /* A four-column table cannot be read on a phone. Each finding becomes a
+     card, with the column headings repeated per cell from `data-label`. */
+  .migration-table thead { display: none; }
+  .migration-table,
+  .migration-table tbody,
+  .migration-table tr,
+  .migration-table td {
+    display: block;
+    width: 100%;
+  }
+  .migration-table tr {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--bg1);
+    padding: 10px 12px;
+    margin-bottom: 10px;
+  }
+  .migration-table td { border-bottom: 0; padding: 5px 0; }
+  .migration-table td::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
 }

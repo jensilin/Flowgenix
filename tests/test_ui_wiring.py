@@ -97,6 +97,19 @@ def test_generated_artifacts_carry_their_own_contents(server):
         assert f'"{key}"' in builder, f"the generate response no longer offers {key}"
 
 
+def test_the_page_is_usable_on_a_phone(html, css, js):
+    assert 'name="viewport"' in html and "width=device-width" in html
+    assert "@media (max-width: 640px)" in css, "no phone breakpoint"
+
+    narrow = css.split("@media (max-width: 640px)", 1)[1]
+    # Under 16px, phone browsers zoom the whole page in when a control is focused.
+    assert "font-size: 16px" in narrow, "form controls will trigger zoom-on-focus"
+    # The findings table is four columns wide and has to restack.
+    assert ".migration-table thead" in narrow
+    for column in ("Component", "Type", "Outcome", "Notes"):
+        assert f'data-label="{column}"' in js, f"stacked rows would lose the {column} heading"
+
+
 def test_upload_uses_text_in_json_transport(js):
     reader = js.split("async function readMigrationUpload(", 1)[1].split("\nasync function ", 1)[0]
     assert "await file.text()" in reader
