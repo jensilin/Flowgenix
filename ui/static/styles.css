@@ -169,13 +169,27 @@ textarea {
   align-items: center;
   gap: var(--s2);
   font-weight: 600;
-  font-size: 15px;
+  font-size: 17px;
+  line-height: 1;
+  letter-spacing: -0.02em;
   text-decoration: none;
   color: var(--ink);
 }
+/* Lowercase wordmark; the dot of the i is an accent square. */
+.wm-i { position: relative; display: inline-block; }
+.wm-i::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0.16em;
+  width: 0.15em;
+  height: 0.15em;
+  transform: translateX(-50%);
+  background: var(--accent);
+}
 .topbar-sub {
   color: var(--muted);
-  font-size: 13px;
+  font: 400 12px var(--mono);
   padding-left: var(--s3);
   border-left: 1px solid var(--rule);
 }

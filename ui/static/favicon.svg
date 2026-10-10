@@ -1,13 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Flowgenix">
   <title>Flowgenix</title>
-  <rect width="64" height="64" rx="6" fill="#c8501e" />
-  <g stroke="#fdfcf9" stroke-width="5" stroke-linecap="square" fill="none">
-    <path d="M24 19 H32 V45 H24" />
-    <path d="M32 32 H42" />
-  </g>
-  <g fill="#fdfcf9">
-    <rect x="10" y="12" width="14" height="14" />
-    <rect x="10" y="38" width="14" height="14" />
-    <rect x="42" y="25" width="14" height="14" />
-  </g>
+  <rect width="64" height="64" rx="4" fill="#c8501e" />
+  <path d="M8 48H22V38H32V28H42V20H46" stroke="#fdfcf9" stroke-width="6" stroke-linejoin="miter" fill="none" />
+  <rect x="43" y="14" width="12" height="12" fill="#fdfcf9" />
 </svg>
