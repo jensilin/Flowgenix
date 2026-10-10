@@ -22,7 +22,7 @@ deck-assets/
 deck-preview/
 flows/
 input/
-samples/
+/samples/
 
 # Vercel CLI
 .vercel/

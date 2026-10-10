@@ -169,8 +169,18 @@ def _run_migration_sync(
         }
     )
 
+    from fidelity import compare_flows
+    from flow_preview import build_preview
+    from readiness import check_readiness
+
     analysis = analyze_migration(doc, source_version, target.version)
-    emit({"type": "analysis", "analysis": analysis.to_dict()})
+    readiness = _optional("import readiness", emit, check_readiness, doc)
+    emit({"type": "analysis", "analysis": analysis.to_dict(), "readiness": readiness})
+
+    outcomes = {f.identifier: f.outcome for f in analysis.findings}
+    preview = _optional("canvas preview", emit, build_preview, doc, outcomes)
+    if preview is not None:
+        emit({"type": "preview", "preview": preview})
 
     if not generate:
         return
@@ -178,14 +188,27 @@ def _run_migration_sync(
     emit({"type": "status", "message": "Generating the migrated flow…"})
     generation = generate_migrated_flow(doc, analysis, output_format=requested)
     artifacts = _build_migration_artifacts(analysis, generation, body.output_name)
+    fidelity = _optional(
+        "fidelity check", emit, compare_flows, doc, generation.migrated, generation.applied_changes
+    )
     emit(
         {
             "type": "generated",
             "generation": generation.to_dict(),
             "artifacts": artifacts,
             "analysis": analysis.to_dict(),
+            "fidelity": fidelity,
         }
     )
+
+
+def _optional(label: str, emit: Any, fn: Any, *args: Any) -> Any:
+    """Run a supporting pass. If it fails, say so and keep the migration going."""
+    try:
+        return fn(*args)
+    except Exception as exc:  # noqa: BLE001
+        emit({"type": "status", "message": f"Skipped the {label}: {exc}"})
+        return None
 
 
 def _build_migration_artifacts(

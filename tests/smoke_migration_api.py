@@ -125,6 +125,18 @@ def main() -> int:
         check("GetHTTP removal detected", s["removed"] >= 1, f"removed={s['removed']}")
         check("template concern raised", any(c["key"] == "templates_removed" for c in analysis["concerns"]))
         check("variable warning raised", any("Variable Registry" in w for w in analysis["warnings"]))
+    readiness = next((e.get("readiness") for e in events if e.get("type") == "analysis"), None)
+    check(
+        "import readiness travels with the analysis",
+        isinstance(readiness, dict) and any(i["kind"] == "path" for i in readiness.get("items", [])),
+        str((readiness or {}).get("counts")),
+    )
+    preview = next((e["preview"] for e in events if e.get("type") == "preview"), None)
+    check(
+        "canvas preview is streamed",
+        isinstance(preview, dict) and preview.get("root") in preview.get("groups", {}),
+        f"{len((preview or {}).get('groups', {}))} group(s)",
+    )
     check("no error event", not any(e.get("type") == "error" for e in events))
 
     # 7. Missing source version is refused, not guessed
@@ -183,6 +195,13 @@ def main() -> int:
         check("report names both versions", "1.25.0" in md and "2.11.0" in md)
         check("report has a manual-review section", "## Manual intervention required" in md)
 
+        fidelity = generated.get("fidelity") or {}
+        check(
+            "fidelity check passes on the migrated flow",
+            fidelity.get("allPassed") is True,
+            f"{fidelity.get('passed')}/{fidelity.get('total')}",
+        )
+
     # 8b. Same-version XML output on a 1.x target
     status, body = post(
         "/api/migration/generate",
@@ -212,9 +231,11 @@ def main() -> int:
     status, _ = get("/api/migration/download?name=anything.json")
     check("no server-side artifact store", status == 404, str(status))
 
-    # 10. Index still responds
+    # 10. Index and the bundled sample flow respond
     status, _ = get("/")
     check("index still works", status == 200)
+    status, body = get("/static/samples/legacy-intake.xml")
+    check("sample flow is served", status == 200 and "<template" in body, str(status))
 
     print()
     if failures:

@@ -110,6 +110,55 @@ def test_the_page_is_usable_on_a_phone(html, css, js):
         assert f'data-label="{column}"' in js, f"stacked rows would lose the {column} heading"
 
 
+def test_every_results_tab_has_its_panel(html):
+    tabs = re.findall(r'role="tab"[^>]*aria-controls="([^"]+)"', html)
+    assert tabs == [
+        "panel-summary",
+        "panel-changes",
+        "panel-preview",
+        "panel-fidelity",
+        "panel-checklist",
+        "panel-log",
+    ]
+    for panel in tabs:
+        assert f'id="{panel}"' in html
+
+
+def test_the_js_consumes_every_event_the_server_streams(js, server):
+    for event in ("status", "error", "analysis", "preview", "generated"):
+        assert f'"type": "{event}"' in server, f"ui/app.py never emits {event}"
+        assert f'event.type === "{event}"' in js, f"app.js ignores {event} events"
+    for key in ("readiness", "fidelity"):
+        assert f'"{key}":' in server and f"event.{key}" in js
+
+
+def test_sample_flow_and_paste_loading(js, html):
+    assert 'SAMPLE_URL = "/static/samples/legacy-intake.xml"' in js
+    assert (STATIC / "samples" / "legacy-intake.xml").is_file()
+    assert "js-load-sample" in html
+    assert 'document.addEventListener("paste"' in js
+
+
+def test_hosted_size_limit_is_checked_before_upload(js):
+    reader = js.split("async function readMigrationUpload(", 1)[1].split("\nasync function ", 1)[0]
+    assert reader.index("sizeProblem(file.size)") < reader.index("await file.text()")
+    assert "4.3 * 1024 * 1024" in js
+
+
+def test_print_report_covers_summary_changes_and_checklist(html, css):
+    printed = re.findall(r'id="(panel-[a-z]+)"[^>]*data-print="yes"', html)
+    assert printed == ["panel-summary", "panel-changes", "panel-checklist"]
+    assert "@media print" in css
+    assert "window.print()" in (APP_JS.read_text(encoding="utf-8"))
+
+
+def test_checklist_ticks_persist_per_flow_and_target(js):
+    key = js.split("function checklistKey(", 1)[1].split("\n}", 1)[0]
+    for part in ("u.filename", "u.size", "targetEl.value"):
+        assert part in key
+    assert "localStorage.setItem(checklistKey()" in js
+
+
 def test_upload_uses_text_in_json_transport(js):
     reader = js.split("async function readMigrationUpload(", 1)[1].split("\nasync function ", 1)[0]
     assert "await file.text()" in reader

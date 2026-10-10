@@ -1,0 +1,38 @@
+---
+description: Flowgenix visual language (precision instrument). Apply when editing the web UI.
+globs: ui/static/**
+alwaysApply: false
+---
+
+# Flowgenix design rules
+
+The UI should read like a measuring instrument, not a landing page. Use the tokens in
+`ui/static/styles.css` and do not add new colours.
+
+## Colour
+- One accent (`--accent`, burnt orange). Use it only for the primary action, focus rings
+  and the active tab. Never for headings, links or decoration.
+- `--add` / `--del` / `--chg` mean added / removed / changed. Never use them decoratively.
+- Neutrals are warm paper and ink. No purple, teal or blue-violet.
+
+## Never
+- `linear-gradient`, `radial-gradient`, glows, `box-shadow`, blurred backdrops.
+- `border-radius: 999px` or pill buttons. Controls are 2px, panels 4px.
+- All-caps eyebrow labels above headings, centred hero blocks, marketing copy.
+- Coloured left-border callouts. Use `.notice` (glyph + bordered row) instead.
+- Inter, Outfit, Space Grotesk, Poppins. Type is IBM Plex Sans + IBM Plex Mono.
+
+## Do
+- Separate with 1px rules (`--rule`). Group with borders, not cards with shadows.
+- Numbers, versions, ids and types in Plex Mono with `font-variant-numeric: tabular-nums`.
+- Spacing from the 4/8/12/16/24/32/48 scale (`--s1`…`--s7`).
+- Transitions 120ms or none. Respect `prefers-reduced-motion`.
+
+```css
+/* BAD */
+.cta { border-radius: 999px; background: linear-gradient(135deg, #7c3aed, #14b8a6); }
+/* GOOD */
+button.primary { border-radius: var(--r-control); background: var(--accent); }
+```
+
+`tests/test_design_lint.py` enforces the "Never" list for the stylesheet, page and favicon.

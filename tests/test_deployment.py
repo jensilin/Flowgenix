@@ -81,3 +81,10 @@ def test_the_deployment_leaves_out_local_scratch():
     ignored = (REPO_ROOT / ".vercelignore").read_text(encoding="utf-8").split()
     for entry in ("migrations/", "tests/", ".venv"):
         assert entry in ignored, f"{entry} should not be uploaded"
+
+
+def test_the_bundled_sample_flow_is_deployed():
+    assert (REPO_ROOT / "ui" / "static" / "samples" / "legacy-intake.xml").is_file()
+    ignored = (REPO_ROOT / ".vercelignore").read_text(encoding="utf-8").split()
+    # An unanchored "samples/" would match ui/static/samples/ as well.
+    assert "samples/" not in ignored

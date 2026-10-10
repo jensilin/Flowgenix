@@ -14,7 +14,8 @@ deck-assets/
 deck-preview/
 flows/
 input/
-samples/
+# Anchored: ui/static/samples/ (the "Load sample flow" file) must ship.
+/samples/
 tests/
 Dockerfile
 .dockerignore

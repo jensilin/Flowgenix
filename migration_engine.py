@@ -594,6 +594,7 @@ def _apply_to_node(
         result.skipped.append(
             {
                 "component": label,
+                "identifier": identifier,
                 "reason": "needs manual review; left unchanged deliberately",
                 "outcome": finding.outcome,
             }
@@ -611,6 +612,7 @@ def _apply_to_node(
         result.applied_changes.append(
             {
                 "component": label,
+                "identifier": identifier,
                 "change": "type",
                 "from": old_type,
                 "to": finding.target_type,
@@ -631,6 +633,7 @@ def _apply_to_node(
                 result.applied_changes.append(
                     {
                         "component": label,
+                        "identifier": identifier,
                         "change": "property",
                         "from": old,
                         "to": new,
@@ -642,6 +645,7 @@ def _apply_to_node(
                 result.applied_changes.append(
                     {
                         "component": label,
+                        "identifier": identifier,
                         "change": "property-removed",
                         "from": old,
                         "to": None,
@@ -656,6 +660,7 @@ def _apply_to_node(
             result.applied_changes.append(
                 {
                     "component": label,
+                    "identifier": identifier,
                     "change": "schedulingStrategy",
                     "from": change.get("from"),
                     "to": change.get("to"),
@@ -672,6 +677,7 @@ def _apply_to_node(
             result.applied_changes.append(
                 {
                     "component": label,
+                    "identifier": identifier,
                     "change": "bundleVersion",
                     "from": old_version,
                     "to": target.version,

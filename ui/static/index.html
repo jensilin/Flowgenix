@@ -2,101 +2,188 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#0f766e" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+  <meta name="theme-color" content="#fdfcf9" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#1e1e1b" media="(prefers-color-scheme: dark)" />
+  <meta name="description" content="Migrate Apache NiFi flows between 1.x and 2.x. Convert XML templates and JSON flow definitions, see every change, and check the result before you import it." />
   <title>Flowgenix — NiFi migration</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/static/favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/styles.css" />
+  <script>
+    // Set the theme before first paint so a dark-mode visitor never sees a light flash.
+    try {
+      document.documentElement.dataset.theme =
+        localStorage.getItem("flowgenix.theme") ||
+        (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    } catch (e) {}
+  </script>
 </head>
 <body>
-  <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">
-    <span id="theme-toggle-label">Dark</span>
-  </button>
+  <header class="topbar">
+    <a class="wordmark" href="/"><img src="/static/favicon.svg" alt="" width="20" height="20" />Flowgenix</a>
+    <span class="topbar-sub">NiFi flow migration</span>
+    <nav class="topbar-links" aria-label="Site">
+      <a href="https://github.com/jensilin/Flowgenix" target="_blank" rel="noopener">Source</a>
+      <button type="button" id="theme-toggle" class="text-button" aria-label="Toggle dark mode" title="Toggle dark mode">
+        <span id="theme-toggle-label">Dark</span>
+      </button>
+    </nav>
+  </header>
 
-  <main class="shell">
-    <header class="brand">
-      <p class="eyebrow"><img src="/static/favicon.svg" alt="" width="20" height="20" />Flowgenix</p>
-      <h1>Migrate a NiFi flow. Convert JSON and XML.</h1>
-      <p class="lede">
-        Upload a 1.x template or a flow definition from any release. Pick the target version.
-        Get a file the destination can import — JSON after 2.6 is not the same shape as 2.6,
-        and XML tag names differ by encoding.
-      </p>
-    </header>
-
-    <section class="card" id="section-source">
-      <h2>Source</h2>
-      <label class="dropzone" id="dropzone" for="migration-file">
-        <input id="migration-file" type="file" accept=".xml,.json,application/xml,text/xml,application/json" />
-        <strong>Drop a NiFi .xml or .json here</strong>
-        <span>or click to choose a file. The upload is never modified.</span>
-      </label>
-      <p id="migration-meta" class="hint">
-        XML templates are 1.x only. A JSON file is never assumed to be 2.x — version is read
-        from NAR bundle stamps inside the file.
-      </p>
-      <div id="migration-detect" class="detect-panel hidden">
-        <div class="detect-head">
-          <span id="migration-format-pill" class="pill">format unknown</span>
-          <span id="migration-version-pill" class="pill">version unknown</span>
-          <span id="migration-count-pill" class="pill">0 components</span>
+  <main class="workspace">
+    <aside class="config-pane" aria-label="Migration settings">
+      <section class="pane-section" id="section-source">
+        <h2 class="section-title">Source</h2>
+        <label class="dropzone" id="dropzone" for="migration-file">
+          <input id="migration-file" type="file" accept=".xml,.json,application/xml,text/xml,application/json" />
+          <strong>Drop a NiFi .xml or .json</strong>
+          <span>or click to choose. You can also paste anywhere on the page.</span>
+        </label>
+        <div class="source-actions">
+          <button type="button" id="load-sample" class="small js-load-sample">Load sample flow</button>
+          <button type="button" id="paste-toggle" class="small">Paste text</button>
         </div>
-        <p id="migration-evidence" class="hint"></p>
-      </div>
-    </section>
+        <div id="paste-panel" class="paste-panel hidden">
+          <textarea id="paste-input" spellcheck="false" aria-label="NiFi template or flow definition" placeholder="&lt;template&gt;… or {&quot;flowContents&quot;: …}"></textarea>
+          <div class="paste-actions">
+            <button type="button" id="paste-submit" class="small">Inspect pasted text</button>
+            <button type="button" id="paste-cancel" class="small text-button">Cancel</button>
+          </div>
+        </div>
+        <p id="migration-meta" class="hint">
+          XML templates are 1.x only. A JSON file is never assumed to be 2.x; the version is read
+          from NAR bundle stamps inside the file.
+        </p>
+        <p id="size-alert" class="size-alert hidden" role="alert"></p>
+        <div id="migration-detect" class="detect-panel hidden">
+          <dl class="detect-list">
+            <div><dt>Format</dt><dd id="migration-format-pill">unknown</dd></div>
+            <div><dt>Version</dt><dd id="migration-version-pill">unknown</dd></div>
+            <div><dt>Components</dt><dd id="migration-count-pill">0</dd></div>
+          </dl>
+          <p id="migration-evidence" class="hint"></p>
+        </div>
+      </section>
 
-    <section class="card" id="section-convert">
-      <h2>Convert</h2>
-      <div class="row">
-        <label class="field grow">
+      <section class="pane-section" id="section-convert">
+        <h2 class="section-title">Convert</h2>
+        <label class="field">
           <span>Source NiFi version</span>
           <select id="migration-source-version"></select>
         </label>
-        <label class="field grow">
+        <label class="field">
           <span>Target NiFi version</span>
           <select id="migration-target-version"></select>
         </label>
-      </div>
-      <fieldset class="format-toggle">
-        <legend>Output format</legend>
-        <label>
-          <input type="radio" name="output-format" id="output-json" value="json_snapshot" checked />
-          JSON flow definition
-        </label>
-        <label>
-          <input type="radio" name="output-format" id="output-xml" value="xml_template" />
-          XML template
-        </label>
-        <p id="output-xml-hint" class="hint">XML is available when the target is NiFi 1.x. 2.x removed templates.</p>
-      </fieldset>
-      <div class="actions">
-        <button type="button" id="migration-analyze" class="ghost" disabled>Analyze</button>
-        <button type="button" id="migration-generate" class="primary" disabled>Generate migrated flow</button>
-      </div>
-    </section>
+        <fieldset class="format-toggle">
+          <legend>Output format</legend>
+          <label>
+            <input type="radio" name="output-format" id="output-json" value="json_snapshot" checked />
+            JSON flow definition
+          </label>
+          <label>
+            <input type="radio" name="output-format" id="output-xml" value="xml_template" />
+            XML template
+          </label>
+          <p id="output-xml-hint" class="hint">XML is available when the target is NiFi 1.x. 2.x removed templates.</p>
+        </fieldset>
+        <div class="actions">
+          <button type="button" id="migration-analyze" disabled>Analyze</button>
+          <button type="button" id="migration-generate" class="primary" disabled>Generate</button>
+        </div>
+      </section>
 
-    <section class="card log-card">
-      <div class="log-head">
-        <h2>Run log</h2>
-        <button type="button" id="export-logs" class="ghost tiny" disabled>Export logs</button>
-      </div>
-      <div id="log" class="log" role="log" aria-live="polite"></div>
-    </section>
+      <section class="pane-section hidden" id="section-readiness">
+        <h2 class="section-title">Import readiness <span id="readiness-count" class="count"></span></h2>
+        <ul id="readiness-list" class="readiness-list"></ul>
+      </section>
+    </aside>
 
-    <section id="migration-report" class="card migration-report hidden">
-      <div class="migration-head">
-        <h2 id="migration-report-title">Migration summary</h2>
-        <span id="migration-report-pill" class="pill">analysing…</span>
+    <div id="pane-splitter" class="splitter" role="separator" tabindex="0"
+         aria-orientation="vertical" aria-controls="migration-report" aria-label="Resize panels"
+         title="Drag to resize. Double-click to reset."></div>
+
+    <section id="migration-report" class="results-pane" aria-label="Results">
+      <div class="results-head">
+        <h2 id="migration-report-title">No flow loaded</h2>
+        <span id="migration-report-pill" class="status-tag">idle</span>
+        <span id="print-meta" class="print-only"></span>
       </div>
-      <div id="migration-stats" class="migration-stats"></div>
-      <div id="migration-concerns" class="migration-concerns hidden"></div>
-      <div id="migration-details" class="migration-details"></div>
-      <div id="migration-warnings" class="migration-warnings hidden"></div>
-      <div id="migration-artifacts" class="migration-artifacts hidden"></div>
+
+      <div class="tabs" role="tablist" aria-label="Result views">
+        <button type="button" role="tab" class="tab" id="tab-summary" data-tab="summary" aria-controls="panel-summary" aria-selected="true">Summary</button>
+        <button type="button" role="tab" class="tab" id="tab-changes" data-tab="changes" aria-controls="panel-changes" aria-selected="false">Changes <span id="tab-count-changes" class="tab-count"></span></button>
+        <button type="button" role="tab" class="tab" id="tab-preview" data-tab="preview" aria-controls="panel-preview" aria-selected="false">Preview</button>
+        <button type="button" role="tab" class="tab" id="tab-fidelity" data-tab="fidelity" aria-controls="panel-fidelity" aria-selected="false">Fidelity <span id="tab-count-fidelity" class="tab-count"></span></button>
+        <button type="button" role="tab" class="tab" id="tab-checklist" data-tab="checklist" aria-controls="panel-checklist" aria-selected="false">Checklist <span id="tab-count-checklist" class="tab-count"></span></button>
+        <button type="button" role="tab" class="tab" id="tab-log" data-tab="log" aria-controls="panel-log" aria-selected="false">Log</button>
+      </div>
+
+      <div class="tab-panel" id="panel-summary" role="tabpanel" aria-labelledby="tab-summary" data-print="yes" data-print-title="Summary">
+        <div id="empty-state" class="empty-state">
+          <h3>Migrate a NiFi flow between versions</h3>
+          <p class="hint">Flowgenix reads a 1.x XML template or a JSON flow definition from any release and writes a file the target version can import.</p>
+          <ol>
+            <li>Drop a file on the left, paste its text, or load the sample.</li>
+            <li>Check the detected version and pick a target.</li>
+            <li>Generate, review the changes and the import checklist, then download.</li>
+          </ol>
+          <button type="button" class="primary js-load-sample">Load sample flow</button>
+        </div>
+        <div id="migration-stats" class="migration-stats hidden"></div>
+        <div id="migration-artifacts" class="migration-artifacts hidden"></div>
+        <div id="migration-concerns" class="migration-concerns hidden"></div>
+        <div id="migration-details" class="migration-details"></div>
+        <div id="migration-warnings" class="migration-warnings hidden"></div>
+      </div>
+
+      <div class="tab-panel hidden" id="panel-changes" role="tabpanel" aria-labelledby="tab-changes" data-print="yes" data-print-title="Changes applied" data-print-empty="yes">
+        <div id="changes-filters" class="changes-filters"></div>
+        <div id="changes-list"><p class="panel-empty">Generate the migrated flow to see every change it makes.</p></div>
+      </div>
+
+      <div class="tab-panel hidden" id="panel-preview" role="tabpanel" aria-labelledby="tab-preview">
+        <div class="preview-toolbar">
+          <nav id="preview-crumbs" class="preview-crumbs" aria-label="Process group path"></nav>
+          <div class="preview-tools">
+            <button type="button" id="preview-zoom-out" class="small" aria-label="Zoom out">−</button>
+            <button type="button" id="preview-zoom-in" class="small" aria-label="Zoom in">+</button>
+            <button type="button" id="preview-fit" class="small">Fit</button>
+          </div>
+        </div>
+        <div id="preview-stage" class="preview-stage">
+          <svg id="preview-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Flow preview"></svg>
+        </div>
+        <div class="preview-legend">
+          <span><i></i>compatible</span>
+          <span><i class="lg-chg"></i>changed on migration</span>
+          <span><i class="lg-del"></i>removed or needs review</span>
+          <span><i class="lg-group"></i>process group (click to open)</span>
+        </div>
+      </div>
+
+      <div class="tab-panel hidden" id="panel-fidelity" role="tabpanel" aria-labelledby="tab-fidelity">
+        <div id="fidelity-body"><p class="panel-empty">Generate the migrated flow to compare it with the source, component by component.</p></div>
+      </div>
+
+      <div class="tab-panel hidden" id="panel-checklist" role="tabpanel" aria-labelledby="tab-checklist" data-print="yes" data-print-title="Import checklist">
+        <div class="checklist-head">
+          <p id="checklist-progress" class="hint"></p>
+          <button type="button" id="print-report" class="small">Print report</button>
+        </div>
+        <div id="checklist-body"><p class="panel-empty">Analyze a flow to build its import checklist.</p></div>
+      </div>
+
+      <div class="tab-panel hidden" id="panel-log" role="tabpanel" aria-labelledby="tab-log">
+        <div class="log-head">
+          <button type="button" id="export-logs" class="small" disabled>Export logs</button>
+        </div>
+        <div id="log" class="log" role="log" aria-live="polite"></div>
+      </div>
     </section>
   </main>
 

@@ -29,14 +29,34 @@ python -m ui.app
 Open **http://127.0.0.1:7860/**. Both are the same app, and the steps below
 apply to either.
 
-1. Drop a `.xml` template or `.json` flow definition.
+1. Drop a `.xml` template or `.json` flow definition, paste its text anywhere on
+   the page, or press **Load sample flow** to try a bundled NiFi 1.25 template.
+   The flow is analyzed as soon as it loads.
 2. Confirm source version (detected from NAR bundle stamps when present).
 3. Pick the target version and output format (JSON, or XML on 1.x targets).
-4. **Analyze**, then **Generate migrated flow**.
-5. Download the migrated file and the Markdown/JSON report.
+   Changing a version re-runs the analysis.
+4. **Generate**, then download the migrated file and the Markdown/JSON report
+   from the Summary tab.
 
 The download is named after the process group inside the flow, because NiFi
 names an imported group after the file it was uploaded from.
+
+The results pane has one tab per question you will have:
+
+| Tab | Shows |
+|---|---|
+| Summary | Outcome counts, downloads, version concerns and every component that needs attention |
+| Changes | Each rewrite grouped by component, before → after, filterable by kind |
+| Preview | The source canvas drawn from its own coordinates, coloured by outcome; click a process group to open it |
+| Fidelity | "N of N checks passed": the output compared with the source, component by component |
+| Checklist | Import steps for this flow; ticks are kept in your browser. **Print report** prints Summary, Changes and Checklist |
+| Log | The run log, exportable |
+
+Alongside the version analysis, the **Import readiness** panel lists what NiFi
+will complain about after import regardless of version: sensitive values that
+were never exported, absolute file paths, relationships that are neither
+connected nor auto-terminated (XML templates), funnels with no way out, and
+controller-service references to services outside the file.
 
 ## Deploy to Vercel
 
@@ -71,6 +91,8 @@ Two hosting limits are worth knowing before you upload a very large flow:
 | Response body | 4.5 MB | The migrated flow plus the report come back together |
 | Function duration | 60 s (`vercel.json`) | Enough for flows of a few thousand components |
 
+The hosted page refuses a file over about 4.3 MB before uploading it (the file
+travels inside JSON, which adds a little), and says to run locally instead.
 Flows past those limits still migrate fine locally or in Docker, where nothing
 travels over a serverless boundary. The run log may also arrive in one burst
 rather than line by line, depending on how the platform buffers the response;
@@ -87,11 +109,22 @@ replaced.
 Everything else is copied verbatim, so the imported canvas matches the one you
 exported: identifiers, positions, properties and their descriptors,
 `annotationData`, relationship flags, connection endpoints, and the
-process-group hierarchy. To confirm that on your own template:
+process-group hierarchy. The Fidelity tab proves it for every generated flow:
+for a template, the source side is read straight from the XML by a separate
+reader, so a converter bug cannot hide itself, and the renames listed under
+Changes are not counted as drift. The same checks run from the command line:
 
 ```powershell
 python tests/check_template_fidelity.py path\to\template.xml 2.6.0
 ```
+
+## Design
+
+The interface is deliberately plain: IBM Plex Sans and Mono, warm neutrals, one
+burnt-orange accent reserved for the primary action, focus and the active tab,
+and green / red / amber used only for added / removed / changed. No gradients,
+shadows or pill shapes. The rules live in `.cursor/rules/flowgenix-design.mdc`
+and `tests/test_design_lint.py` enforces them.
 
 ## Configuration
 

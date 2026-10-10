@@ -448,11 +448,12 @@ def _property_descriptors(node: ET.Element | None) -> dict[str, Any]:
             continue
         value = entry.find("value")
         name = _text(value, "name") or key
+        # A template stores the service API class name here, not a boolean.
+        service_api = _text(value, "identifiesControllerService")
         out[key] = {
             "name": name,
             "displayName": _text(value, "displayName") or name,
-            "identifiesControllerService": _text(value, "identifiesControllerService").lower()
-            == "true",
+            "identifiesControllerService": service_api.lower() not in ("", "false"),
             "sensitive": _text(value, "sensitive").lower() == "true",
             "dynamic": _text(value, "dynamic").lower() == "true",
         }

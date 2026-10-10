@@ -28,20 +28,68 @@ Run it locally for anything larger.
 
 ## Workflow
 
-1. Drop the file on the source card (or click to browse).
-2. Flowgenix reports format, detected version, and component count. Detection
-   uses NAR `bundle.version` stamps. A `.json` file is **never** assumed to be
-   2.x — 1.x has written flow definitions since 1.16.
+The settings sit in the left pane and the results on the right (stacked on a
+phone). The theme follows your system; **Dark** / **Light** in the top bar
+overrides it.
+
+1. Load a flow: drop the file on the source area (or click to browse), paste
+   the XML or JSON anywhere on the page, use **Paste text**, or press
+   **Load sample flow** for a small NiFi 1.25 template that exercises most
+   rules. On the hosted app a file over about 4.3 MB is refused before upload.
+2. Flowgenix reports format, detected version, and component count, then runs
+   the analysis straight away. Detection uses NAR `bundle.version` stamps. A
+   `.json` file is **never** assumed to be 2.x — 1.x has written flow
+   definitions since 1.16.
 3. Choose source version (pre-filled when detection is certain) and target
-   version.
+   version. Changing either re-runs the analysis.
 4. Choose output format:
    - **JSON flow definition** — works for 1.16+ and every 2.x. Import via
      *Upload flow definition* / Registry.
    - **XML template** — only when the target is 1.x. NiFi 2.0 removed templates.
-5. **Analyze** to see compatibility without writing files.
-6. **Generate migrated flow** to download the converted file plus a report. The
-   file is named after the process group inside it, which is the name NiFi will
-   suggest for the imported group.
+5. **Generate** to produce the converted file plus a report. The downloads
+   appear at the top of the Summary tab. The file is named after the process
+   group inside it, which is the name NiFi will suggest for the imported group.
+
+## Reading the results
+
+- **Summary** — outcome counts, downloads, version-level concerns (templates
+  removed, Variable Registry removed, Java 21) and a table of every component
+  that is not simply compatible.
+- **Changes** — every rewrite the generator made, grouped by component, shown
+  as before → after. Filter by kind (type, property, scheduling, bundle
+  version). Components left alone for manual review are listed underneath.
+- **Preview** — the source canvas, drawn at NiFi's own coordinates. Amber boxes
+  change on migration, red ones are removed or need review, and a red square
+  marks an import-readiness fix. Click a process group to open it; the path
+  above the canvas takes you back. Scroll or pinch to zoom, drag to pan,
+  **Fit** to reset.
+- **Fidelity** — appears after Generate. It compares the output with the source
+  (counts, names, types, every property and value, positions, connection
+  endpoints, dangling references) and reports "N of N checks passed". For a
+  template the source is read directly from the XML. Renames listed under
+  Changes are expected and not counted as drift.
+- **Checklist** — the import steps for this particular flow: resolve the
+  flagged components and readiness items, recreate variables as parameters,
+  enable services, start. Ticks are saved in your browser for this file and
+  target. **Print report** prints Summary, Changes and the Checklist as a
+  handover document.
+- **Log** — the run log, with **Export logs**.
+
+## Import readiness
+
+The panel under the settings lists problems that exist in the flow itself and
+will show up after import on any version:
+
+| Item | Why it matters |
+|---|---|
+| Sensitive values were not exported | NiFi never exports passwords or keys; re-enter them |
+| Absolute file system path | The path must exist on every target node |
+| Relationship neither connected nor auto-terminated | NiFi will not start the processor. Checked for XML templates, which list each processor's relationships; JSON flow definitions do not |
+| Funnel with no outgoing connection | FlowFiles queue there forever and NiFi flags it invalid |
+| Controller service not in this file | The exported group referenced a service defined above it; create it on the target |
+
+Items marked **fix** stop the flow from starting; **check** items are worth
+confirming.
 
 ## Version dialects (2.6 and XML tags)
 
@@ -92,7 +140,8 @@ import behaves.
 - **1.x XML:** *Upload template* on the 1.x UI.
 
 Review every `[MANUAL REVIEW REQUIRED]` comment before starting processors.
-Migrated components are imported stopped.
+Migrated components are imported stopped. The Checklist tab lists these steps
+for your flow.
 
 ## Running it elsewhere
 

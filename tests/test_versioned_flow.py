@@ -347,6 +347,24 @@ def test_property_descriptors_carry_no_fields_outside_the_model():
     }
 
 
+def test_service_descriptor_holding_an_api_class_name_is_a_service_reference():
+    """Templates write the service interface name, not "true", in this field."""
+    xml = """<template encoding-version="1.3"><name>t</name><snippet>
+      <processors><id>p1</id><name>P</name><type>org.apache.nifi.X</type>
+        <config><descriptors>
+          <entry><key>SSL Context Service</key><value>
+            <name>SSL Context Service</name>
+            <identifiesControllerService>org.apache.nifi.ssl.SSLContextService</identifiesControllerService>
+          </value></entry>
+          <entry><key>URL</key><value><name>URL</name></value></entry>
+        </descriptors></config>
+      </processors>
+    </snippet></template>"""
+    desc = _migrate(xml)["flowContents"]["processors"][0]["propertyDescriptors"]
+    assert desc["SSL Context Service"]["identifiesControllerService"] is True
+    assert desc["URL"]["identifiesControllerService"] is False
+
+
 def test_variables_are_dropped_for_2x_but_kept_for_1x():
     """The Variable Registry — and the group's `variables` field — went away in 2.0."""
     xml = """<template encoding-version="1.3"><name>t</name><snippet>
