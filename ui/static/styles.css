@@ -180,14 +180,6 @@ textarea {
   border-left: 1px solid var(--rule);
 }
 .topbar-links { margin-left: auto; display: flex; align-items: center; gap: var(--s1); }
-.topbar-links a {
-  color: var(--muted);
-  font-size: 13px;
-  text-decoration: none;
-  padding: 0 var(--s2);
-}
-.topbar-links a:hover { color: var(--ink); text-decoration: underline; }
-
 /* ---------- workspace ---------- */
 
 /* Two panes that scroll on their own under a fixed top bar. `--left` is set by
@@ -726,7 +718,6 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); margi
   button.small, .crumb, .preview-tools button { min-height: 40px; }
   .preview-tools button { min-width: 44px; }
   .tab { min-height: 44px; }
-  .topbar-links a { display: inline-flex; align-items: center; min-height: 44px; }
   .dropzone { padding: var(--s5) var(--s4); }
   .source-actions { gap: var(--s2); }
   .format-toggle label, .checklist label { min-height: 44px; }
