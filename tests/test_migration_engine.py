@@ -20,6 +20,10 @@ from migration_engine import (
 from migration_rules import COMPATIBLE, CONFIG_CHANGE, DEPRECATED, REMOVED, UNKNOWN
 
 
+def _all_ids(analysis) -> list[str]:
+    return [s["id"] for s in analysis.suggestions()]
+
+
 # --- Analysis -----------------------------------------------------------------
 
 
@@ -174,7 +178,7 @@ def test_unverified_does_not_block_a_deterministic_property_rename():
     """
     doc = parse_flow_file(flow, "f.json")
     analysis = analyze_migration(doc, "1.25.0", "2.11.0")
-    result = generate_migrated_flow(doc, analysis)
+    result = generate_migrated_flow(doc, analysis, accepted=_all_ids(analysis))
 
     node = result.migrated["flowContents"]["processors"][0]
     assert "Jolt Transform" in node["properties"]
@@ -251,10 +255,10 @@ def test_manual_marker_records_the_suggested_replacement_without_applying_it(jso
 # --- Generation: safe changes are applied ------------------------------------
 
 
-def test_safe_property_rename_is_applied(xml_template_1x):
+def test_accepted_property_rename_is_applied(xml_template_1x):
     doc = parse_flow_file(xml_template_1x, "t.xml")
     analysis = analyze_migration(doc, "1.25.0", "2.11.0")
-    result = generate_migrated_flow(doc, analysis)
+    result = generate_migrated_flow(doc, analysis, accepted=_all_ids(analysis))
 
     reshape = next(
         p for p in result.migrated["flowContents"]["processors"] if p["name"] == "Reshape Records"
@@ -264,10 +268,10 @@ def test_safe_property_rename_is_applied(xml_template_1x):
     assert reshape["properties"]["Jolt Transform"] == "jolt-transform-shift"
 
 
-def test_event_driven_is_rewritten_in_the_generated_flow(xml_template_1x):
+def test_accepted_event_driven_change_is_rewritten_in_the_generated_flow(xml_template_1x):
     doc = parse_flow_file(xml_template_1x, "t.xml")
     analysis = analyze_migration(doc, "1.25.0", "2.11.0")
-    result = generate_migrated_flow(doc, analysis)
+    result = generate_migrated_flow(doc, analysis, accepted=_all_ids(analysis))
 
     reshape = next(
         p for p in result.migrated["flowContents"]["processors"] if p["name"] == "Reshape Records"
@@ -290,9 +294,9 @@ def test_bundle_versions_are_restamped_to_the_target(json_flow_1x):
 def test_every_applied_change_is_recorded_with_a_reason(xml_template_1x):
     doc = parse_flow_file(xml_template_1x, "t.xml")
     analysis = analyze_migration(doc, "1.25.0", "2.11.0")
-    result = generate_migrated_flow(doc, analysis)
+    result = generate_migrated_flow(doc, analysis, accepted=_all_ids(analysis))
 
-    assert result.applied_changes
+    assert {c["change"] for c in result.applied_changes} >= {"property", "schedulingStrategy"}
     for change in result.applied_changes:
         assert change["component"]
         assert change["change"]

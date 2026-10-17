@@ -13,7 +13,8 @@ SAMPLE = Path(__file__).resolve().parent.parent / "ui" / "static" / "samples" / 
 def _run(text: str, name: str, source: str, target: str = "2.6.0"):
     doc = parse_flow_file(text, name)
     analysis = analyze_migration(doc, source, target)
-    generation = generate_migrated_flow(doc, analysis)
+    accepted = [s["id"] for s in analysis.suggestions()]
+    generation = generate_migrated_flow(doc, analysis, accepted=accepted)
     return doc, generation
 
 

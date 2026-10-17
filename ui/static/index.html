@@ -140,7 +140,17 @@
         <div id="migration-warnings" class="migration-warnings hidden"></div>
       </div>
 
-      <div class="tab-panel hidden" id="panel-changes" role="tabpanel" aria-labelledby="tab-changes" data-print="yes" data-print-title="Changes applied" data-print-empty="yes">
+      <div class="tab-panel hidden" id="panel-changes" role="tabpanel" aria-labelledby="tab-changes" data-print="yes" data-print-title="Changes" data-print-empty="yes">
+        <section id="suggestions" class="suggestions hidden" aria-labelledby="suggestions-title">
+          <div class="suggestions-head">
+            <h3 id="suggestions-title" class="section-label">Suggested changes</h3>
+            <span id="suggestions-progress" class="suggestions-progress"></span>
+            <button type="button" id="suggestions-accept-all" class="small">Accept all</button>
+            <button type="button" id="suggestions-clear" class="small">Clear</button>
+          </div>
+          <p class="hint">Nothing here is applied unless you tick it. Format changes always happen: XML to JSON, the NAR bundle version and the target's JSON fields.</p>
+          <div id="suggestions-list"></div>
+        </section>
         <div id="changes-filters" class="changes-filters"></div>
         <div id="changes-list"><p class="panel-empty">Generate the migrated flow to see every change it makes.</p></div>
       </div>

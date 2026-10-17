@@ -86,13 +86,14 @@ def compare_flows(
             retyped.append(f"{name}: {_short(proc['type'])} → {_short(out['type'])}")
         renames = intended["renames"].get(proc["id"], {})
         removed = intended["removed"].get(proc["id"], set())
+        revalued = intended["revalued"].get(proc["id"], set())
         for key, value in proc["properties"].items():
             if key in removed:
                 continue
             new_key = renames.get(key, key)
             if new_key not in out["properties"]:
                 lost_props.append(f"{name}: {key}")
-            elif _norm(out["properties"][new_key]) != _norm(value):
+            elif new_key not in revalued and _norm(out["properties"][new_key]) != _norm(value):
                 changed_values.append(f"{name}: {key}")
         if out["position"] != proc["position"]:
             moved.append(f"{name}: {proc['position']} → {out['position']}")
@@ -300,6 +301,7 @@ def _intended(applied_changes: list[dict[str, Any]]) -> dict[str, Any]:
     types: dict[str, str] = {}
     renames: dict[str, dict[str, str]] = defaultdict(dict)
     removed: dict[str, set[str]] = defaultdict(set)
+    revalued: dict[str, set[str]] = defaultdict(set)
     for change in applied_changes:
         ident = str(change.get("identifier") or "")
         if not ident:
@@ -311,7 +313,9 @@ def _intended(applied_changes: list[dict[str, Any]]) -> dict[str, Any]:
             renames[ident][str(change["from"])] = str(change["to"])
         elif kind == "property-removed" and change.get("from"):
             removed[ident].add(str(change["from"]))
-    return {"types": types, "renames": renames, "removed": removed}
+        elif kind == "property-value" and change.get("from"):
+            revalued[ident].add(str(change["from"]).split("=", 1)[0])
+    return {"types": types, "renames": renames, "removed": removed, "revalued": revalued}
 
 
 def _json_root(data: Any) -> dict[str, Any]:

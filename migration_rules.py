@@ -203,6 +203,42 @@ PROPERTY_RULES: tuple[PropertyRule, ...] = (
     ),
 )
 
+#: Property renames needed when moving a flow *down* across a boundary: the
+#: source release uses the newer name and the older target only knows the old
+#: one. NiFi migrates old names forward on import, but never backward.
+DOWNGRADE_PROPERTY_RULES: tuple[PropertyRule, ...] = (
+    PropertyRule(
+        processor="JoltTransformJSON",
+        old_name="Jolt Transform",
+        new_name="Jolt Transformation DSL",
+        applies_from=_TO_2X,
+        explanation="NiFi 1.x knows this property by its pre-2.0 name.",
+    ),
+    PropertyRule(
+        processor="JoltTransformRecord",
+        old_name="Jolt Transform",
+        new_name="Jolt Transformation DSL",
+        applies_from=_TO_2X,
+        explanation="NiFi 1.x knows this property by its pre-2.0 name.",
+    ),
+    *(
+        PropertyRule(
+            processor="InvokeHTTP",
+            old_name=new,
+            new_name=old,
+            applies_from=_TO_2X,
+            explanation="NiFi 2.0 renamed this InvokeHTTP property; 1.x only knows the old name.",
+        )
+        for new, old in (
+            ("HTTP URL", "Remote URL"),
+            ("Socket Connect Timeout", "Connection Timeout"),
+            ("Socket Read Timeout", "Read Timeout"),
+            ("Request Username", "Basic Authentication Username"),
+            ("Request Password", "Basic Authentication Password"),
+        )
+    ),
+)
+
 # --- Controller service rules -------------------------------------------------
 
 SERVICE_RULES: tuple[ProcessorRule, ...] = (
@@ -217,6 +253,384 @@ SERVICE_RULES: tuple[ProcessorRule, ...] = (
         ),
     ),
 )
+
+
+# --- Component history --------------------------------------------------------
+#
+# When each component type arrived, was deprecated and was removed, and what to
+# use instead. This is what makes suggestions direction-aware: the same table
+# answers "the target removed this" on an upgrade and "the target predates this"
+# on a downgrade. Versions come from the Apache NiFi wiki pages "Deprecated
+# Components and Features" and "Migrating Deprecated Components and Features for
+# 2.0.0".
+
+_STD = "org.apache.nifi.processors.standard."
+
+
+@dataclass(frozen=True)
+class ComponentHistory:
+    type_name: str  # fully-qualified class name
+    kind: str = "processor"  # processor | controllerService
+    introduced: str = "0.0.0"
+    deprecated: str | None = None
+    removed: str | None = None
+    #: Fully-qualified replacement type, used when the target deprecated or removed this one.
+    replacement: str | None = None
+    #: Fully-qualified equivalent on releases that predate this type.
+    downgrade_to: str | None = None
+    #: How a swap carries configuration over, keyed by the type being swapped *to*.
+    swaps: dict[str, "Swap"] = field(default_factory=dict)
+    note: str = ""
+
+    @property
+    def short(self) -> str:
+        return _short(self.type_name)
+
+    def available_on(self, version: str) -> bool:
+        v = parse_version(version)
+        if v < parse_version(self.introduced):
+            return False
+        return not (self.removed and v >= parse_version(self.removed))
+
+
+@dataclass(frozen=True)
+class Swap:
+    """How to carry a component's configuration over to a different type.
+
+    Properties not named in `property_map` are dropped unless
+    `carry_other_properties` is set: an unknown key on the new type becomes a
+    dynamic property, which for InvokeHTTP means an HTTP header.
+    """
+
+    property_map: dict[str, str] = field(default_factory=dict)
+    set_properties: dict[str, str] = field(default_factory=dict)
+    value_map: dict[str, dict[str, str]] = field(default_factory=dict)
+    relationship_map: dict[str, str] = field(default_factory=dict)
+    carry_other_properties: bool = False
+    bundle_artifact: str | None = None
+    new_required_properties: tuple[str, ...] = ()
+    risk: str = "review"  # safe | review
+    note: str = ""
+
+
+_HTTP_COMMON = {
+    "URL": "Remote URL",
+    "SSL Context Service": "SSL Context Service",
+    "Connection Timeout": "Connection Timeout",
+    "Data Timeout": "Read Timeout",
+    "Username": "Basic Authentication Username",
+    "Password": "Basic Authentication Password",
+}
+
+_JMS_NAR = "nifi-jms-processors-nar"
+
+COMPONENT_HISTORY: tuple[ComponentHistory, ...] = (
+    ComponentHistory(
+        type_name=_STD + "GetHTTP",
+        deprecated="1.9.0",
+        removed=_TO_2X,
+        replacement=_STD + "InvokeHTTP",
+        swaps={
+            _STD + "InvokeHTTP": Swap(
+                property_map=_HTTP_COMMON,
+                set_properties={"HTTP Method": "GET"},
+                relationship_map={"success": "Response"},
+                note=(
+                    "InvokeHTTP also emits Original, Retry, No Retry and Failure; connect or "
+                    "auto-terminate them. The FlowFile filename is no longer taken from the "
+                    "Filename property."
+                ),
+            )
+        },
+    ),
+    ComponentHistory(
+        type_name=_STD + "PostHTTP",
+        deprecated="1.9.0",
+        removed=_TO_2X,
+        replacement=_STD + "InvokeHTTP",
+        swaps={
+            _STD + "InvokeHTTP": Swap(
+                property_map=_HTTP_COMMON,
+                set_properties={"HTTP Method": "POST"},
+                relationship_map={"success": "Original", "failure": "Failure"},
+                note=(
+                    "InvokeHTTP also emits Response, Retry and No Retry; connect or "
+                    "auto-terminate them. 'Send as FlowFile' packaging has no InvokeHTTP "
+                    "equivalent — use MergeContent (FlowFile v3) before it if you relied on it."
+                ),
+            )
+        },
+    ),
+    ComponentHistory(
+        type_name=_STD + "Base64EncodeContent",
+        deprecated="1.20.0",
+        removed=_TO_2X,
+        replacement=_STD + "EncodeContent",
+        swaps={
+            _STD + "EncodeContent": Swap(
+                property_map={"Mode": "Mode"},
+                set_properties={"Encoding": "base64"},
+                risk="safe",
+            )
+        },
+    ),
+    ComponentHistory(
+        type_name=_STD + "HashContent",
+        deprecated="1.8.0",
+        removed=_TO_2X,
+        replacement=_STD + "CryptographicHashContent",
+        swaps={
+            _STD + "CryptographicHashContent": Swap(
+                property_map={"Hash Algorithm": "Hash Algorithm"},
+                note=(
+                    "CryptographicHashContent writes the digest to content_<algorithm> "
+                    "instead of the configured Hash Attribute Name; add an UpdateAttribute "
+                    "if downstream components read the old attribute."
+                ),
+            )
+        },
+    ),
+    ComponentHistory(
+        type_name=_STD + "CryptographicHashContent",
+        introduced="1.8.0",
+        downgrade_to=_STD + "HashContent",
+        swaps={
+            _STD + "HashContent": Swap(
+                property_map={"Hash Algorithm": "Hash Algorithm"},
+                note="HashContent writes the digest to hash.value unless Hash Attribute Name is set.",
+            )
+        },
+    ),
+    ComponentHistory(
+        type_name=_STD + "HashAttribute",
+        deprecated="1.21.0",
+        removed=_TO_2X,
+        replacement=_STD + "UpdateAttribute",
+        swaps={
+            _STD + "UpdateAttribute": Swap(
+                note=(
+                    "HashAttribute's settings do not translate. Add a dynamic property on "
+                    "UpdateAttribute that uses the hash() expression function, for example "
+                    "label-hash = ${label:hash('SHA-256')}."
+                ),
+            )
+        },
+    ),
+    ComponentHistory(
+        type_name=_STD + "CryptographicHashAttribute",
+        introduced="1.8.0",
+        deprecated="1.21.0",
+        removed=_TO_2X,
+        replacement=_STD + "UpdateAttribute",
+        swaps={
+            _STD + "UpdateAttribute": Swap(
+                note="Use the hash() expression function in an UpdateAttribute dynamic property.",
+            )
+        },
+    ),
+    ComponentHistory(
+        type_name=_STD + "GetJMSQueue",
+        deprecated="1.3.0",
+        removed=_TO_2X,
+        replacement="org.apache.nifi.jms.processors.ConsumeJMS",
+        swaps={
+            "org.apache.nifi.jms.processors.ConsumeJMS": Swap(
+                property_map={
+                    "Destination Name": "Destination Name",
+                    "Username": "User Name",
+                    "Password": "Password",
+                },
+                set_properties={"Destination Type": "QUEUE"},
+                bundle_artifact=_JMS_NAR,
+                new_required_properties=("Connection Factory Service",),
+                note=(
+                    "ConsumeJMS needs a JMSConnectionFactoryProvider controller service and a "
+                    "directory of JMS client libraries; the broker URL moves to that service."
+                ),
+            )
+        },
+    ),
+    ComponentHistory(
+        type_name=_STD + "GetJMSTopic",
+        deprecated="1.3.0",
+        removed=_TO_2X,
+        replacement="org.apache.nifi.jms.processors.ConsumeJMS",
+        swaps={
+            "org.apache.nifi.jms.processors.ConsumeJMS": Swap(
+                property_map={
+                    "Destination Name": "Destination Name",
+                    "Username": "User Name",
+                    "Password": "Password",
+                },
+                set_properties={"Destination Type": "TOPIC"},
+                bundle_artifact=_JMS_NAR,
+                new_required_properties=("Connection Factory Service",),
+                note=(
+                    "ConsumeJMS needs a JMSConnectionFactoryProvider controller service and a "
+                    "directory of JMS client libraries; the broker URL moves to that service."
+                ),
+            )
+        },
+    ),
+    ComponentHistory(
+        type_name=_STD + "PutJMS",
+        deprecated="1.3.0",
+        removed=_TO_2X,
+        replacement="org.apache.nifi.jms.processors.PublishJMS",
+        swaps={
+            "org.apache.nifi.jms.processors.PublishJMS": Swap(
+                property_map={
+                    "Destination Name": "Destination Name",
+                    "Destination Type": "Destination Type",
+                    "Username": "User Name",
+                    "Password": "Password",
+                },
+                value_map={"Destination Type": {"Queue": "QUEUE", "Topic": "TOPIC"}},
+                bundle_artifact=_JMS_NAR,
+                new_required_properties=("Connection Factory Service",),
+                note=(
+                    "PublishJMS needs a JMSConnectionFactoryProvider controller service and a "
+                    "directory of JMS client libraries; the broker URL moves to that service."
+                ),
+            )
+        },
+    ),
+    ComponentHistory(
+        type_name="org.apache.nifi.kafka.processors.ConsumeKafka",
+        introduced=_TO_2X,
+        note=(
+            "The 2.x Kafka processors delegate the connection to a Kafka3ConnectionService. "
+            "The 1.x ConsumeKafka_* processors are configured differently, so rebuild this "
+            "component by hand on the older release."
+        ),
+    ),
+    ComponentHistory(
+        type_name="org.apache.nifi.kafka.processors.PublishKafka",
+        introduced=_TO_2X,
+        note=(
+            "The 2.x Kafka processors delegate the connection to a Kafka3ConnectionService. "
+            "The 1.x PublishKafka_* processors are configured differently, so rebuild this "
+            "component by hand on the older release."
+        ),
+    ),
+    ComponentHistory(
+        type_name="org.apache.nifi.distributed.cache.client.DistributedMapCacheClientService",
+        kind="controllerService",
+        deprecated=_TO_2X,
+        replacement="org.apache.nifi.distributed.cache.client.MapCacheClientService",
+        swaps={
+            "org.apache.nifi.distributed.cache.client.MapCacheClientService": Swap(
+                carry_other_properties=True,
+                risk="safe",
+            )
+        },
+    ),
+    ComponentHistory(
+        type_name="org.apache.nifi.distributed.cache.client.MapCacheClientService",
+        kind="controllerService",
+        introduced=_TO_2X,
+        downgrade_to="org.apache.nifi.distributed.cache.client.DistributedMapCacheClientService",
+        swaps={
+            "org.apache.nifi.distributed.cache.client.DistributedMapCacheClientService": Swap(
+                carry_other_properties=True,
+                risk="safe",
+            )
+        },
+    ),
+)
+
+
+@dataclass(frozen=True)
+class LifecycleVerdict:
+    """What the component history says about one type on one migration path."""
+
+    status: str  # removed | deprecated | not_available | available
+    direction: str  # upgrade | downgrade
+    history: ComponentHistory
+    swap_to: str | None = None
+    swap: Swap | None = None
+    explanation: str = ""
+
+    @property
+    def required(self) -> bool:
+        return self.status in ("removed", "not_available")
+
+
+def component_history_for(type_name: str) -> ComponentHistory | None:
+    """Match on the full class name when one is given, otherwise on the short name.
+
+    The full name matters: 1.x shipped a Kafka 0.9 `ConsumeKafka` in another
+    package, which is not the 2.x processor of the same short name.
+    """
+    name = (type_name or "").strip()
+    if "." in name:
+        for entry in COMPONENT_HISTORY:
+            if entry.type_name == name:
+                return entry
+        return None
+    for entry in COMPONENT_HISTORY:
+        if entry.short.lower() == name.lower():
+            return entry
+    return None
+
+
+def _swap_available(type_name: str | None, target_version: str) -> bool:
+    if not type_name:
+        return False
+    entry = component_history_for(type_name)
+    return entry is None or entry.available_on(target_version)
+
+
+def lifecycle_verdict(
+    type_name: str, source_version: str, target_version: str
+) -> LifecycleVerdict | None:
+    entry = component_history_for(type_name)
+    if entry is None:
+        return None
+    t = parse_version(target_version)
+    direction = "downgrade" if t < parse_version(source_version) else "upgrade"
+
+    if t < parse_version(entry.introduced):
+        alt = entry.downgrade_to if _swap_available(entry.downgrade_to, target_version) else None
+        text = f"{entry.short} was introduced in NiFi {entry.introduced}; NiFi {target_version} does not have it."
+        if alt:
+            text += f" {_short(alt)} is the closest equivalent on that release."
+        else:
+            text += " There is no equivalent on that release."
+        if entry.note:
+            text += f" {entry.note}"
+        return LifecycleVerdict(
+            "not_available", direction, entry, alt, entry.swaps.get(alt) if alt else None, text
+        )
+
+    alt = entry.replacement if _swap_available(entry.replacement, target_version) else None
+    swap = entry.swaps.get(alt) if alt else None
+    if entry.removed and t >= parse_version(entry.removed):
+        text = (
+            f"{entry.short} was deprecated in NiFi {entry.deprecated} and removed in NiFi "
+            f"{entry.removed.split('.')[0]}.0."
+            if entry.deprecated
+            else f"{entry.short} was removed in NiFi {entry.removed}."
+        )
+        if alt:
+            text += f" {_short(alt)} is the supported replacement."
+        return LifecycleVerdict("removed", direction, entry, alt, swap, text)
+
+    if entry.deprecated and t >= parse_version(entry.deprecated):
+        text = (
+            f"{entry.short} is deprecated since NiFi {entry.deprecated} but still available on "
+            f"NiFi {target_version}."
+        )
+        if alt:
+            text += f" {_short(alt)} is the recommended replacement; switching is optional."
+        return LifecycleVerdict("deprecated", direction, entry, alt, swap, text)
+
+    return LifecycleVerdict(
+        "available",
+        direction,
+        entry,
+        explanation=f"{entry.short} is available on NiFi {target_version}.",
+    )
 
 
 # --- Flow-level (non-processor) concerns --------------------------------------
@@ -333,12 +747,50 @@ def property_rules_for(type_name: str, target_version: str) -> list[PropertyRule
     ]
 
 
+def downgrade_property_rules_for(
+    type_name: str, source_version: str, target_version: str
+) -> list[PropertyRule]:
+    """Renames to undo when the source is at or past a boundary the target is below."""
+    short = _short(type_name).lower()
+    source, target = parse_version(source_version), parse_version(target_version)
+    return [
+        rule
+        for rule in DOWNGRADE_PROPERTY_RULES
+        if source >= parse_version(rule.applies_from) > target
+        and (rule.processor == "*" or _short(rule.processor).lower() == short)
+    ]
+
+
+def property_name_on(type_name: str, name: str, target_version: str) -> str:
+    """The name `type_name` uses for a property on `target_version`.
+
+    Swaps are written with pre-2.0 names; a 2.x target spells some of them differently.
+    """
+    short = _short(type_name).lower()
+    target = parse_version(target_version)
+    for rule in DOWNGRADE_PROPERTY_RULES:
+        if (
+            rule.new_name == name
+            and target >= parse_version(rule.applies_from)
+            and (rule.processor == "*" or _short(rule.processor).lower() == short)
+        ):
+            return rule.old_name
+    return name
+
+
 def rule_summary() -> dict[str, Any]:
     """Introspection for tests and the UI's 'what does this tool know?' hint."""
+    history = [h for h in COMPONENT_HISTORY if h.kind == "processor"]
     return {
         "processorRules": len(PROCESSOR_RULES),
-        "propertyRules": len(PROPERTY_RULES),
+        "propertyRules": len(PROPERTY_RULES) + len(DOWNGRADE_PROPERTY_RULES),
         "serviceRules": len(SERVICE_RULES),
-        "coveredProcessors": sorted({_short(r.source_name) for r in PROCESSOR_RULES}),
-        "coveredServices": sorted({_short(r.source_name) for r in SERVICE_RULES}),
+        "historyEntries": len(COMPONENT_HISTORY),
+        "coveredProcessors": sorted(
+            {_short(r.source_name) for r in PROCESSOR_RULES} | {h.short for h in history}
+        ),
+        "coveredServices": sorted(
+            {_short(r.source_name) for r in SERVICE_RULES}
+            | {h.short for h in COMPONENT_HISTORY if h.kind == "controllerService"}
+        ),
     }

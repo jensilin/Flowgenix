@@ -78,6 +78,7 @@ def _v1(version: str, label: str = "", notes: str = "") -> NiFiVersion:
         version=version,
         line="1.x",
         label=label or version,
+        supports_parameter_contexts=parse_version(version) >= (1, 10, 0),
         minimum_java=8,
         notes=notes,
     )
@@ -106,6 +107,13 @@ def _v2(version: str, label: str = "", notes: str = "") -> NiFiVersion:
 #   * Parameter Contexts arrived in 1.10.
 #   * JSON flow-definition fields diverge at 2.6 (see flow_schema.py).
 SUPPORTED_VERSIONS: tuple[NiFiVersion, ...] = (
+    _v1(
+        "1.2.0",
+        notes=(
+            "First release with versioned NAR bundles in templates (encoding-version 1.1). "
+            "Predates Parameter Contexts and most of the 1.x deprecations."
+        ),
+    ),
     _v1("1.16.3"),
     _v1("1.19.1"),
     _v1("1.21.0"),
@@ -169,12 +177,18 @@ def get_version(version: str | None) -> NiFiVersion | None:
     same_line = [v for v in SUPPORTED_VERSIONS if parse_version(v.version)[:2] == (major, minor)]
     if same_line:
         return same_line[0]
-    # Last resort: the newest entry on the same major line, so a 1.x flow still
-    # resolves to 1.x traits rather than falling off a cliff into 2.x traits.
-    same_major = [v for v in SUPPORTED_VERSIONS if parse_version(v.version)[0] == major]
-    if same_major:
-        return sorted(same_major, key=lambda v: v.sort_key)[-1]
-    return None
+    # Last resort: the nearest *older* entry on the same major line, so an
+    # unlisted release never inherits traits (or deprecations) from a newer one.
+    # A release older than everything listed takes the oldest entry instead.
+    same_major = sorted(
+        (v for v in SUPPORTED_VERSIONS if parse_version(v.version)[0] == major),
+        key=lambda v: v.sort_key,
+    )
+    if not same_major:
+        return None
+    wanted = parse_version(key)
+    older = [v for v in same_major if v.sort_key <= wanted]
+    return older[-1] if older else same_major[0]
 
 
 def resolve_or_raise(version: str | None, role: str) -> NiFiVersion:

@@ -37,6 +37,11 @@ const changesPanel = document.getElementById("panel-changes");
 const changesFilters = document.getElementById("changes-filters");
 const changesList = document.getElementById("changes-list");
 const changesCount = document.getElementById("tab-count-changes");
+const suggestionsEl = document.getElementById("suggestions");
+const suggestionsList = document.getElementById("suggestions-list");
+const suggestionsProgress = document.getElementById("suggestions-progress");
+const acceptAllBtn = document.getElementById("suggestions-accept-all");
+const clearSuggestionsBtn = document.getElementById("suggestions-clear");
 const previewCrumbs = document.getElementById("preview-crumbs");
 const previewStage = document.getElementById("preview-stage");
 const previewSvg = document.getElementById("preview-svg");
@@ -86,8 +91,17 @@ const CHANGE_KINDS = {
   type: { label: "type replaced", tone: "chg" },
   property: { label: "property renamed", tone: "chg" },
   "property-removed": { label: "property removed", tone: "del" },
+  "property-set": { label: "property set", tone: "add" },
+  "property-value": { label: "value changed", tone: "chg" },
+  relationship: { label: "relationship", tone: "chg" },
   schedulingStrategy: { label: "scheduling", tone: "chg" },
   bundleVersion: { label: "bundle version", tone: "" },
+};
+const SUGGESTION_KINDS = {
+  type: "replace type",
+  property: "rename property",
+  "property-removed": "remove property",
+  schedulingStrategy: "scheduling",
 };
 
 const state = {
@@ -104,6 +118,9 @@ let logLines = [];
 let artifactUrls = [];
 let migrationVersions = [];
 let changeFilter = null;
+// Ticked suggestion ids. They outlive a re-analysis of the same file (ids are
+// stable), and are cleared when a different file is loaded.
+const acceptedIds = new Set();
 
 // ---------- theme ----------
 
@@ -339,6 +356,8 @@ function resetResults() {
   changesPanel.dataset.printEmpty = "yes";
   changesList.innerHTML = `<p class="panel-empty">Generate the migrated flow to see every change it makes.</p>`;
   changesCount.textContent = "";
+  suggestionsEl.classList.add("hidden");
+  suggestionsList.innerHTML = "";
   fidelityBody.innerHTML = `<p class="panel-empty">Generate the migrated flow to compare it with the source, component by component.</p>`;
   fidelityCount.textContent = "";
   resetPreview();
@@ -375,6 +394,7 @@ async function readMigrationUpload(file) {
   if (tooBig) throw new Error(tooBig);
 
   resetResults();
+  acceptedIds.clear();
   const text = await file.text();
   const resp = await fetch("/api/migration/inspect", {
     method: "POST",
@@ -449,6 +469,13 @@ function migrationRequestBody() {
 
 async function runMigration(generate) {
   const body = migrationRequestBody();
+  if (generate) {
+    body.accepted_suggestions = [...acceptedIds];
+    const offered = state.analysis?.suggestions?.length || 0;
+    if (offered && !acceptedIds.size) {
+      log("No suggestions accepted: only format changes will be applied. Tick suggestions in the Changes tab to apply them.");
+    }
+  }
   const runId = ++state.runId;
   resetResults();
   state.running = true;
@@ -506,8 +533,11 @@ function handleEvent(event) {
   if (event.type === "analysis") {
     state.analysis = event.analysis;
     state.readiness = event.readiness || null;
+    const offered = new Set((event.analysis.suggestions || []).map((s) => s.id));
+    for (const id of [...acceptedIds]) if (!offered.has(id)) acceptedIds.delete(id);
     renderMigrationReport(event.analysis);
     renderReadiness(state.readiness);
+    renderChanges();
     renderChecklist();
   }
   if (event.type === "preview") renderPreview(event.preview);
@@ -583,6 +613,19 @@ function renderMigrationReport(analysis) {
             .join("")}
         </tbody>
       </table>`;
+  }
+  const offered = summary.suggestionCount || 0;
+  if (offered) {
+    const required = summary.requiredSuggestionCount || 0;
+    detailsEl.insertAdjacentHTML(
+      "afterbegin",
+      notice(
+        `${offered} suggested change${offered === 1 ? "" : "s"} (${summary.direction || "upgrade"})`,
+        `${required} of them ${required === 1 ? "is" : "are"} required by NiFi ${summary.targetVersion}. ` +
+          "None is applied unless you tick it in the Changes tab.",
+        false
+      )
+    );
   }
 
   const warnings = analysis.warnings || [];
@@ -666,12 +709,150 @@ function renderReadiness(readiness) {
 
 // ---------- changes ----------
 
+function offeredSuggestions() {
+  return state.analysis?.suggestions || [];
+}
+
 function renderChanges() {
-  const generation = state.generation || {};
+  renderSuggestions();
+  renderAppliedChanges();
+}
+
+function renderSuggestions() {
+  const list = offeredSuggestions();
+  suggestionsEl.classList.toggle("hidden", list.length === 0);
+  if (!list.length) {
+    suggestionsList.innerHTML = "";
+    return;
+  }
+  const groups = new Map();
+  for (const s of list) {
+    if (!groups.has(s.componentId)) groups.set(s.componentId, { name: s.component, rows: [] });
+    groups.get(s.componentId).rows.push(s);
+  }
+  suggestionsList.innerHTML = [...groups.values()]
+    .map(
+      (group) => `<section class="change-group">
+        <div class="change-group-head"><strong>${escapeHtml(group.name || "component")}</strong><span>${group.rows.length} suggestion${group.rows.length === 1 ? "" : "s"}</span></div>
+        ${group.rows.map(suggestionRow).join("")}
+      </section>`
+    )
+    .join("");
+  syncSuggestionProgress();
+}
+
+function syncSuggestionProgress() {
+  const list = offeredSuggestions();
+  const accepted = list.filter((s) => acceptedIds.has(s.id)).length;
+  suggestionsProgress.textContent = `${accepted} of ${list.length} accepted`;
+  acceptAllBtn.disabled = accepted === list.length;
+  clearSuggestionsBtn.disabled = accepted === 0;
+}
+
+function suggestionRow(s) {
+  const isType = s.kind === "type";
+  const from = isType ? shortType(s.from) : s.from;
+  const to = isType ? shortType(s.to) : s.to;
+  const diff =
+    to === null || to === undefined
+      ? `<span class="diff-from" title="${escapeHtml(s.from)}">${escapeHtml(from)}</span><span class="diff-arrow">removed</span>`
+      : `<span class="diff-from" title="${escapeHtml(s.from)}">${escapeHtml(from)}</span><span class="diff-arrow">→</span><span class="diff-to" title="${escapeHtml(s.to)}">${escapeHtml(to)}</span>`;
+  const tags = [
+    `<span class="kind-tag">${escapeHtml(s.direction)}</span>`,
+    s.required
+      ? `<span class="kind-tag tone-del" title="The target rejects or invalidates the component without this change.">required</span>`
+      : `<span class="kind-tag" title="The component still works on the target without this change.">optional</span>`,
+    s.risk === "review"
+      ? `<span class="kind-tag tone-chg" title="A different component: check its settings before starting the flow.">review after</span>`
+      : "",
+  ].join("");
+
+  const d = s.details || {};
+  const facts = [];
+  const renamed = Object.entries(d.propertyMap || {}).filter(([a, b]) => a !== b);
+  if (renamed.length) facts.push(`Renames ${renamed.map(([a, b]) => `${a} → ${b}`).join(", ")}`);
+  const set = Object.entries(d.setProperties || {});
+  if (set.length) facts.push(`Sets ${set.map(([k, v]) => `${k} = ${v}`).join(", ")}`);
+  const rels = Object.entries(d.relationshipMap || {}).filter(([a, b]) => a !== b);
+  if (rels.length) facts.push(`Reconnects ${rels.map(([a, b]) => `${a} → ${b}`).join(", ")}`);
+  if (d.dropsProperties?.length) facts.push(`Drops ${d.dropsProperties.join(", ")}`);
+  if (d.newRequiredProperties?.length) facts.push(`You configure ${d.newRequiredProperties.join(", ")}`);
+  if (d.bundleArtifact) facts.push(`Moves to ${d.bundleArtifact}`);
+
+  return `<label class="suggestion-row">
+    <input type="checkbox" class="suggestion-check" value="${escapeHtml(s.id)}"${acceptedIds.has(s.id) ? " checked" : ""} />
+    <span class="suggestion-body">
+      <span class="suggestion-line"><span class="kind-tag tone-chg">${escapeHtml(SUGGESTION_KINDS[s.kind] || s.kind)}</span><span class="diff">${diff}</span></span>
+      <span class="suggestion-tags">${tags}</span>
+      ${s.reason ? `<span class="suggestion-reason">${escapeHtml(s.reason)}</span>` : ""}
+      ${facts.length ? `<span class="suggestion-facts">${facts.map((f) => `<span>${escapeHtml(f)}</span>`).join("")}</span>` : ""}
+    </span>
+  </label>`;
+}
+
+// A file generated under different choices no longer matches the ticks, so
+// drop it and let the button go back to Generate.
+function invalidateGeneration() {
+  if (!state.generation && !state.artifacts) return;
+  for (const url of artifactUrls) URL.revokeObjectURL(url);
+  artifactUrls = [];
+  state.generation = null;
+  state.artifacts = null;
+  state.fidelity = null;
+  changeFilter = null;
+  artifactsEl.innerHTML = "";
+  artifactsEl.classList.add("hidden");
+  fidelityBody.innerHTML = `<p class="panel-empty">Generate the migrated flow to compare it with the source, component by component.</p>`;
+  fidelityCount.textContent = "";
+  syncGenerateButton();
+  renderAppliedChanges();
+  renderChecklist();
+  const review = state.analysis?.summary?.manualReview;
+  setStatus(review ? "review needed" : "ready", review ? "chg" : "add");
+  log("Suggestion choices changed. Generate again to apply them.");
+}
+
+function suggestionChoicesChanged() {
+  invalidateGeneration();
+  syncSuggestionProgress();
+}
+
+suggestionsList.addEventListener("change", (event) => {
+  const box = event.target.closest(".suggestion-check");
+  if (!box) return;
+  if (box.checked) acceptedIds.add(box.value);
+  else acceptedIds.delete(box.value);
+  suggestionChoicesChanged();
+});
+acceptAllBtn.addEventListener("click", () => {
+  for (const s of offeredSuggestions()) acceptedIds.add(s.id);
+  renderSuggestions();
+  suggestionChoicesChanged();
+});
+clearSuggestionsBtn.addEventListener("click", () => {
+  acceptedIds.clear();
+  renderSuggestions();
+  suggestionChoicesChanged();
+});
+
+function renderAppliedChanges() {
+  const offered = offeredSuggestions();
+  if (!state.generation) {
+    changesCount.textContent = offered.length ? String(offered.length) : "";
+    changesPanel.dataset.printEmpty = offered.length ? "no" : "yes";
+    changesFilters.innerHTML = "";
+    changesList.innerHTML = offered.length
+      ? `<p class="panel-empty">Tick the suggestions you want, then Generate. Only ticked changes are applied.</p>`
+      : `<p class="panel-empty">Generate the migrated flow to see every change it makes.</p>`;
+    return;
+  }
+
+  const generation = state.generation;
   const changes = generation.appliedChanges || [];
   const skipped = generation.skipped || [];
+  const declined = generation.declinedSuggestions || [];
   changesCount.textContent = changes.length ? String(changes.length) : "";
-  changesPanel.dataset.printEmpty = changes.length || skipped.length ? "no" : "yes";
+  changesPanel.dataset.printEmpty = changes.length || skipped.length || offered.length ? "no" : "yes";
 
   const kinds = {};
   for (const change of changes) kinds[change.change] = (kinds[change.change] || 0) + 1;
@@ -697,6 +878,8 @@ function renderChanges() {
   }
 
   const parts = [];
+  for (const warning of generation.warnings || []) parts.push(notice("", warning, true));
+  if (offered.length) parts.unshift(`<h3 class="section-label">Applied to the generated file</h3>`);
   if (!changes.length) {
     parts.push(`<p class="panel-empty">The migration did not need to rewrite anything.</p>`);
   } else if (!groups.size) {
@@ -707,6 +890,14 @@ function renderChanges() {
       <div class="change-group-head"><strong>${escapeHtml(group.name || "component")}</strong><span>${group.rows.length} change${group.rows.length === 1 ? "" : "s"}</span></div>
       ${group.rows.map(changeRow).join("")}
     </section>`);
+  }
+  if (declined.length) {
+    parts.push(`<h3 class="section-label">Not accepted, left as in the source</h3>`);
+    parts.push(`<section class="change-group">${declined
+      .map((d) =>
+        changeRow({ ...d, change: d.kind, reason: d.required ? "Required by the target, but not accepted." : "Optional; not accepted." })
+      )
+      .join("")}</section>`);
   }
   if (skipped.length) {
     parts.push(`<h3 class="section-label">Left unchanged for manual review</h3>`);
@@ -745,7 +936,7 @@ changesFilters.addEventListener("click", (event) => {
   const kind = button.dataset.kind;
   if (changeFilter.has(kind)) changeFilter.delete(kind);
   else changeFilter.add(kind);
-  renderChanges();
+  renderAppliedChanges();
 });
 
 // ---------- canvas preview ----------
@@ -1102,9 +1293,22 @@ function buildChecklist() {
     },
   ];
 
+  const applied = new Set(state.generation?.acceptedSuggestions || []);
+  const swaps = (analysis.suggestions || []).filter((s) => s.kind === "type" && applied.has(s.id));
+  const swapped = new Set(swaps.map((s) => s.componentId));
   const fixes = [];
+  for (const s of swaps) {
+    const d = s.details || {};
+    const configure = d.newRequiredProperties?.length ? `Configure ${d.newRequiredProperties.join(", ")}.` : "";
+    fixes.push({
+      id: `swap:${s.id}`,
+      text: `${s.component}: check the settings of the new ${shortType(s.to)}`,
+      note: [configure, d.note].filter(Boolean).join(" ") || s.reason,
+    });
+  }
   for (const f of analysis.findings || []) {
     if (!(f.manualReview || f.outcome === "removed" || f.outcome === "manual_review")) continue;
+    if (swapped.has(f.identifier)) continue;
     fixes.push({
       id: `review:${f.identifier}`,
       text: `${f.name} (${shortType(f.sourceType)}): ${OUTCOME_LABELS[f.outcome] || f.outcome}`,

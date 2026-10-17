@@ -25,7 +25,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
 
 from flow_document import (
     FORMAT_JSON_SNAPSHOT,
@@ -45,8 +45,13 @@ from migration_rules import (
     RENAMED,
     REPLACED,
     UNKNOWN,
+    LifecycleVerdict,
+    Swap,
+    downgrade_property_rules_for,
     flow_concerns,
+    lifecycle_verdict,
     processor_rule_for,
+    property_name_on,
     property_rules_for,
     service_rule_for,
 )
@@ -91,6 +96,9 @@ class ComponentFinding:
     block_auto_migration: bool = False
     decided_by: str = "rules"  # rules | structural | default
     ai_suggestion: str = ""
+    #: Changes Flowgenix proposes for this component. None is applied unless the
+    #: user accepts its id when generating.
+    suggestions: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -110,6 +118,7 @@ class ComponentFinding:
             "blockAutoMigration": self.block_auto_migration,
             "decidedBy": self.decided_by,
             "aiSuggestion": self.ai_suggestion,
+            "suggestionIds": [s["id"] for s in self.suggestions],
         }
 
 
@@ -155,11 +164,20 @@ class MigrationAnalysis:
             "concernCount": len(self.concerns),
             "warningCount": len(self.warnings),
             "errorCount": len(self.errors),
+            "direction": "downgrade"
+            if is_downgrade(self.source_version, self.target_version)
+            else "upgrade",
+            "suggestionCount": len(self.suggestions()),
+            "requiredSuggestionCount": sum(1 for s in self.suggestions() if s["required"]),
         }
+
+    def suggestions(self) -> list[dict[str, Any]]:
+        return [s for f in self.findings for s in f.suggestions]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "summary": self.summary(),
+            "suggestions": self.suggestions(),
             "findings": [f.to_dict() for f in self.findings],
             "concerns": self.concerns,
             "warnings": self.warnings,
@@ -256,6 +274,7 @@ def _analyze_processor(
     )
 
     rule = processor_rule_for(comp.type_name, target.version)
+    life = lifecycle_verdict(comp.type_name, source.version, target.version)
 
     if rule is not None:
         finding.outcome = rule.outcome
@@ -273,6 +292,8 @@ def _analyze_processor(
                 finding.property_changes.append(
                     {"property": old, "from": old, "to": new, "reason": "renamed in target version"}
                 )
+    elif life is not None:
+        _apply_lifecycle(finding, life)
     else:
         finding.outcome = UNKNOWN
         finding.decided_by = "default"
@@ -283,10 +304,11 @@ def _analyze_processor(
         finding.recommendation = (
             f"Confirm {comp.short_type} exists on NiFi {target.version} before starting the flow."
         )
+    _recommend_swap(finding, life)
 
     # 2. Property renames apply on top of whatever the type-level verdict was.
     was_unverified = finding.outcome == UNKNOWN
-    for prop_rule in property_rules_for(comp.type_name, target.version):
+    for prop_rule in _property_rules(comp.type_name, source, target):
         if prop_rule.old_name in comp.properties:
             finding.property_changes.append(
                 {
@@ -322,20 +344,23 @@ def _analyze_processor(
             f"{c['from']} → {c['to']}" for c in finding.property_changes
         )
         finding.explanation = (
-            f"Requires known changes for NiFi {target.version}: {changes}. The migrated flow "
-            f"applies them. Note that {comp.short_type} itself was not verified by a curated rule."
+            f"Requires known changes for NiFi {target.version}: {changes}. They are suggested "
+            f"and applied only if you accept them. Note that {comp.short_type} itself was not "
+            "verified by a curated rule."
         )
         finding.recommendation = (
-            f"The changes above are applied automatically. Separately, confirm {comp.short_type} "
+            f"Accept the suggested changes above. Separately, confirm {comp.short_type} "
             f"is installed on NiFi {target.version}."
         )
     elif not finding.explanation and finding.property_changes:
         finding.explanation = (
-            f"Requires configuration changes for NiFi {target.version}, applied automatically."
+            f"Requires configuration changes for NiFi {target.version}; they are applied "
+            "only if you accept them."
         )
 
     if finding.outcome in NEEDS_REVIEW:
         finding.manual_review = True
+    finding.suggestions = _suggestions_for(comp, finding, life, source, target)
     return finding
 
 
@@ -354,6 +379,7 @@ def _analyze_service(
     )
 
     rule = service_rule_for(comp.type_name, target.version)
+    life = lifecycle_verdict(comp.type_name, source.version, target.version)
 
     if rule is not None:
         finding.outcome = rule.outcome
@@ -362,6 +388,8 @@ def _analyze_service(
         finding.manual_review = rule.manual_review
         finding.block_auto_migration = rule.manual_review or rule.outcome == REMOVED
         finding.decided_by = "rules"
+    elif life is not None:
+        _apply_lifecycle(finding, life)
     else:
         finding.outcome = UNKNOWN
         finding.decided_by = "default"
@@ -369,8 +397,9 @@ def _analyze_service(
             f"No rule covers controller service {comp.short_type}. Confirm it exists on "
             f"NiFi {target.version}."
         )
+    _recommend_swap(finding, life)
 
-    for prop_rule in property_rules_for(comp.type_name, target.version):
+    for prop_rule in _property_rules(comp.type_name, source, target):
         if prop_rule.old_name in comp.properties:
             finding.property_changes.append(
                 {
@@ -385,7 +414,134 @@ def _analyze_service(
 
     if finding.outcome in NEEDS_REVIEW:
         finding.manual_review = True
+    finding.suggestions = _suggestions_for(comp, finding, life, source, target)
     return finding
+
+
+def _property_rules(type_name: str, source: Any, target: Any) -> list[Any]:
+    return [
+        *property_rules_for(type_name, target.version),
+        *downgrade_property_rules_for(type_name, source.version, target.version),
+    ]
+
+
+def _apply_lifecycle(finding: ComponentFinding, life: LifecycleVerdict) -> None:
+    """Verdict for a type the component history knows but no curated rule covers."""
+    finding.decided_by = "rules"
+    finding.explanation = life.explanation
+    if life.status == "available":
+        finding.outcome = COMPATIBLE
+    elif life.status == "deprecated":
+        finding.outcome = DEPRECATED
+    else:
+        finding.outcome = REMOVED
+        finding.manual_review = True
+        finding.block_auto_migration = True
+
+
+def _recommend_swap(finding: ComponentFinding, life: LifecycleVerdict | None) -> None:
+    if life is None or life.status == "available":
+        return
+    if life.swap_to:
+        short = _short(life.swap_to)
+        finding.target_type = short
+        finding.recommendation = (
+            f"Replace with {short} (suggested; accept it to apply)."
+            if life.required
+            else f"Optionally replace with {short}; it is still available, so this is your choice."
+        )
+        if life.swap is not None:
+            for prop in life.swap.new_required_properties:
+                if prop not in finding.new_required_properties:
+                    finding.new_required_properties.append(prop)
+    elif life.status == "not_available" and not finding.recommendation:
+        finding.recommendation = (
+            "No equivalent exists on the target release. Rebuild this component by hand "
+            "there, or remove it."
+        )
+
+
+def suggestion_id(component_id: str, kind: str, source: str) -> str:
+    return f"{component_id}:{kind}:{source}"
+
+
+def _suggestions_for(
+    comp: Component,
+    finding: ComponentFinding,
+    life: LifecycleVerdict | None,
+    source: Any,
+    target: Any,
+) -> list[dict[str, Any]]:
+    direction = "downgrade" if is_downgrade(source.version, target.version) else "upgrade"
+    base = {
+        "componentId": finding.identifier,
+        "component": finding.name,
+        "componentKind": finding.kind,
+        "groupPath": finding.group_path,
+        "direction": direction,
+    }
+    out: list[dict[str, Any]] = []
+
+    if life is not None and life.swap_to:
+        swap = life.swap or Swap()
+        props = comp.properties or {}
+
+        def on_target(name: str) -> str:
+            return property_name_on(life.swap_to, name, target.version)
+
+        mapped = {old: on_target(new) for old, new in swap.property_map.items() if old in props}
+        dropped = (
+            []
+            if swap.carry_other_properties
+            else [k for k in props if k not in swap.property_map]
+        )
+        reason = life.explanation + (f" {swap.note}" if swap.note else "")
+        out.append(
+            {
+                **base,
+                "id": suggestion_id(finding.identifier, "type", comp.short_type),
+                "kind": "type",
+                "from": comp.type_name,
+                "to": life.swap_to,
+                "reason": reason,
+                "risk": swap.risk,
+                "required": life.required,
+                "details": {
+                    "bundleArtifact": swap.bundle_artifact,
+                    "propertyMap": mapped,
+                    "setProperties": {on_target(k): v for k, v in swap.set_properties.items()},
+                    "valueMap": {k: dict(v) for k, v in swap.value_map.items()},
+                    "relationshipMap": dict(swap.relationship_map),
+                    "carryOtherProperties": swap.carry_other_properties,
+                    "dropsProperties": dropped,
+                    "newRequiredProperties": [on_target(p) for p in swap.new_required_properties],
+                    "note": swap.note,
+                },
+            }
+        )
+
+    for change in finding.property_changes:
+        if change.get("property") == "schedulingStrategy":
+            kind = "schedulingStrategy"
+        elif change.get("to") == "(removed)":
+            kind = "property-removed"
+        else:
+            kind = "property"
+        out.append(
+            {
+                **base,
+                "id": suggestion_id(finding.identifier, kind, str(change.get("from"))),
+                "kind": kind,
+                "from": change.get("from"),
+                "to": None if kind == "property-removed" else change.get("to"),
+                "reason": change.get("reason", ""),
+                "risk": "safe",
+                # The target does not understand the old value, so skipping
+                # this leaves the component invalid there.
+                "required": True,
+            }
+        )
+    return out
 
 
 def _check_variables(doc: FlowDocument, source: Any, target: Any, analysis: MigrationAnalysis) -> None:
@@ -445,6 +601,15 @@ class MigrationResult:
     skipped: list[dict[str, Any]] = field(default_factory=list)
     manual_markers: list[dict[str, Any]] = field(default_factory=list)
     dialect_notes: list[str] = field(default_factory=list)
+    #: Suggestion ids the user accepted that were applied.
+    accepted: list[str] = field(default_factory=list)
+    #: Suggestions the user did not accept, left unapplied.
+    declined: list[dict[str, Any]] = field(default_factory=list)
+    #: Accepted ids that matched no suggestion in this analysis.
+    unknown_accepted: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    #: Component id → {old relationship: new relationship} for accepted type swaps.
+    relationship_maps: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -453,9 +618,15 @@ class MigrationResult:
             "skipped": self.skipped,
             "manualMarkers": self.manual_markers,
             "dialectNotes": self.dialect_notes,
+            "acceptedSuggestions": self.accepted,
+            "declinedSuggestions": self.declined,
+            "unknownAccepted": self.unknown_accepted,
+            "warnings": self.warnings,
             "appliedCount": len(self.applied_changes),
             "skippedCount": len(self.skipped),
             "manualCount": len(self.manual_markers),
+            "acceptedCount": len(self.accepted),
+            "declinedCount": len(self.declined),
             "hasXml": bool(self.xml_text),
         }
 
@@ -464,15 +635,20 @@ def generate_migrated_flow(
     doc: FlowDocument,
     analysis: MigrationAnalysis,
     output_format: str = FORMAT_JSON_SNAPSHOT,
+    accepted: Iterable[str] | None = None,
 ) -> MigrationResult:
     """Produce a migrated copy of the flow.
 
     Rules of engagement:
       * The uploaded document is never mutated — everything happens on a deep copy.
-      * Only changes backed by the curated rule base are applied.
-      * A component needing review is copied through **unchanged** and annotated.
+      * A component change (type swap, property rename or removal, scheduling)
+        is applied only when its suggestion id is in `accepted`. Nothing is
+        accepted by default.
+      * Format changes always happen: XML-to-JSON conversion, the NAR bundle
+        version and the target's JSON dialect.
+      * A component needing review is copied through **unchanged** and annotated,
+        unless an accepted replacement resolves it.
       * XML templates cannot target 2.x (templates were removed).
-      * JSON is restamped to the target dialect after mechanical rewrites.
     """
     requested = (output_format or FORMAT_JSON_SNAPSHOT).strip()
     if requested not in {FORMAT_JSON_SNAPSHOT, FORMAT_XML_TEMPLATE}:
@@ -488,13 +664,31 @@ def generate_migrated_flow(
         )
 
     by_id = {f.identifier: f for f in analysis.findings}
+    chosen = {str(a) for a in (accepted or ())}
 
     if doc.source_format == FORMAT_XML_TEMPLATE:
-        result = _generate_from_xml(doc, analysis, by_id)
+        result = _generate_from_xml(doc, analysis, by_id, chosen)
     else:
-        result = _generate_from_json(doc, analysis, by_id)
+        result = _generate_from_json(doc, analysis, by_id, chosen)
+
+    known = {s["id"] for s in analysis.suggestions()}
+    result.unknown_accepted = sorted(chosen - known)
+    required = [d for d in result.declined if d.get("required")]
+    if required:
+        def describe(d: dict[str, Any]) -> str:
+            if d["kind"] == "type":
+                return f"{d['component']}: {_short(d['from'])} → {_short(d['to'])}"
+            return f"{d['component']}: {d['from']} → {d['to'] or 'removed'}"
+
+        listed = "; ".join(describe(d) for d in required[:6])
+        result.warnings.append(
+            f"{len(required)} required change(s) were not accepted, so NiFi "
+            f"{analysis.target_version} may reject or invalidate those components: {listed}"
+            f"{'…' if len(required) > 6 else ''}."
+        )
 
     if isinstance(result.migrated, dict):
+        _remap_relationships(result.migrated, result)
         _stamp_provenance(result.migrated, analysis)
         result.dialect_notes = apply_json_dialect(result.migrated, analysis.target_version)
         for note in result.dialect_notes:
@@ -514,7 +708,10 @@ def generate_migrated_flow(
 
 
 def _generate_from_json(
-    doc: FlowDocument, analysis: MigrationAnalysis, by_id: dict[str, ComponentFinding]
+    doc: FlowDocument,
+    analysis: MigrationAnalysis,
+    by_id: dict[str, ComponentFinding],
+    accepted: set[str],
 ) -> MigrationResult:
     migrated = copy.deepcopy(doc.original)
     result = MigrationResult(migrated=migrated, output_format=FORMAT_JSON_SNAPSHOT)
@@ -522,9 +719,9 @@ def _generate_from_json(
 
     def visit(node: dict[str, Any]) -> None:
         for proc in node.get("processors") or []:
-            _apply_to_node(proc, by_id, result, target, kind="processor")
+            _apply_to_node(proc, by_id, result, target, accepted)
         for svc in node.get("controllerServices") or []:
-            _apply_to_node(svc, by_id, result, target, kind="controllerService")
+            _apply_to_node(svc, by_id, result, target, accepted)
         # 2.x has no Variable Registry: drop the (now meaningless) block, but
         # record it so the report can say the values were carried nowhere.
         if target is not None and not target.supports_variable_registry:
@@ -563,7 +760,7 @@ def _apply_to_node(
     by_id: dict[str, ComponentFinding],
     result: MigrationResult,
     target: Any,
-    kind: str,
+    accepted: set[str],
 ) -> None:
     identifier = str(node.get("identifier") or node.get("id") or "")
     finding = by_id.get(identifier)
@@ -572,8 +769,37 @@ def _apply_to_node(
 
     label = node.get("name") or finding.name
 
+    chosen: list[dict[str, Any]] = []
+    for suggestion in finding.suggestions:
+        if suggestion["id"] in accepted:
+            chosen.append(suggestion)
+        else:
+            result.declined.append(
+                {
+                    "id": suggestion["id"],
+                    "component": label,
+                    "identifier": identifier,
+                    "kind": suggestion["kind"],
+                    "from": suggestion["from"],
+                    "to": suggestion["to"],
+                    "required": suggestion["required"],
+                    "direction": suggestion["direction"],
+                    "reason": suggestion["reason"],
+                }
+            )
+
+    swapped = False
+    for suggestion in chosen:
+        if suggestion["kind"] == "type":
+            _apply_type_swap(node, suggestion, result, label, identifier)
+            swapped = True
+    for suggestion in chosen:
+        if suggestion["kind"] != "type":
+            _apply_simple_suggestion(node, suggestion, result, label, identifier)
+    result.accepted.extend(s["id"] for s in chosen)
+
     # Never rewrite something that has no trustworthy mechanical fix. Mark it.
-    if finding.block_auto_migration:
+    if finding.block_auto_migration and not swapped:
         result.manual_markers.append(
             {
                 "component": label,
@@ -605,69 +831,6 @@ def _apply_to_node(
     # in the artifact would rewrite the comments of every ordinary processor, so
     # the "not verified" list stays in the report where it does not alter the flow.
 
-    # Type rename/replacement that the rule base considers safe.
-    if finding.target_type and finding.outcome in (RENAMED, REPLACED):
-        old_type = node.get("type")
-        node["type"] = finding.target_type
-        result.applied_changes.append(
-            {
-                "component": label,
-                "identifier": identifier,
-                "change": "type",
-                "from": old_type,
-                "to": finding.target_type,
-                "reason": finding.explanation,
-            }
-        )
-
-    # Property renames.
-    props = node.get("properties")
-    if isinstance(props, dict):
-        for change in finding.property_changes:
-            old = change.get("from")
-            new = change.get("to")
-            if change.get("property") == "schedulingStrategy":
-                continue  # handled below; not a property-map entry
-            if old in props and new and new != "(removed)":
-                props[new] = props.pop(old)
-                result.applied_changes.append(
-                    {
-                        "component": label,
-                        "identifier": identifier,
-                        "change": "property",
-                        "from": old,
-                        "to": new,
-                        "reason": change.get("reason", ""),
-                    }
-                )
-            elif old in props and new == "(removed)":
-                props.pop(old)
-                result.applied_changes.append(
-                    {
-                        "component": label,
-                        "identifier": identifier,
-                        "change": "property-removed",
-                        "from": old,
-                        "to": None,
-                        "reason": change.get("reason", ""),
-                    }
-                )
-
-    # Scheduling strategy.
-    for change in finding.property_changes:
-        if change.get("property") == "schedulingStrategy":
-            node["schedulingStrategy"] = change.get("to")
-            result.applied_changes.append(
-                {
-                    "component": label,
-                    "identifier": identifier,
-                    "change": "schedulingStrategy",
-                    "from": change.get("from"),
-                    "to": change.get("to"),
-                    "reason": change.get("reason", ""),
-                }
-            )
-
     # Re-stamp the NAR bundle so the target loads the right version.
     bundle = node.get("bundle")
     if isinstance(bundle, dict) and target is not None and bundle.get("version"):
@@ -686,8 +849,168 @@ def _apply_to_node(
             )
 
 
+def _record(
+    result: MigrationResult,
+    label: str,
+    identifier: str,
+    change: str,
+    old: Any,
+    new: Any,
+    reason: str,
+    suggestion: str | None = None,
+) -> None:
+    entry = {
+        "component": label,
+        "identifier": identifier,
+        "change": change,
+        "from": old,
+        "to": new,
+        "reason": reason,
+    }
+    if suggestion:
+        entry["suggestion"] = suggestion
+    result.applied_changes.append(entry)
+
+
+def _apply_simple_suggestion(
+    node: dict[str, Any],
+    suggestion: dict[str, Any],
+    result: MigrationResult,
+    label: str,
+    identifier: str,
+) -> None:
+    kind, old, new = suggestion["kind"], suggestion["from"], suggestion["to"]
+    if kind == "schedulingStrategy":
+        node["schedulingStrategy"] = new
+        _record(result, label, identifier, kind, old, new, suggestion["reason"], suggestion["id"])
+        return
+    props = node.get("properties")
+    if not isinstance(props, dict) or old not in props:
+        return
+    descriptors = node.get("propertyDescriptors")
+    if kind == "property" and new:
+        props[new] = props.pop(old)
+        if isinstance(descriptors, dict) and old in descriptors:
+            descriptor = dict(descriptors.pop(old) or {})
+            descriptor.update({"name": new, "displayName": new})
+            descriptors[new] = descriptor
+        _record(result, label, identifier, "property", old, new, suggestion["reason"], suggestion["id"])
+    elif kind == "property-removed":
+        props.pop(old)
+        if isinstance(descriptors, dict):
+            descriptors.pop(old, None)
+        _record(result, label, identifier, "property-removed", old, None, suggestion["reason"], suggestion["id"])
+
+
+def _apply_type_swap(
+    node: dict[str, Any],
+    suggestion: dict[str, Any],
+    result: MigrationResult,
+    label: str,
+    identifier: str,
+) -> None:
+    """Replace the component's type and carry its configuration across."""
+    details = suggestion.get("details") or {}
+    sid = suggestion["id"]
+    old_type = str(node.get("type") or suggestion["from"])
+    new_type = suggestion["to"]
+    node["type"] = new_type
+    bundle = node.get("bundle")
+    if details.get("bundleArtifact") and isinstance(bundle, dict):
+        bundle["artifact"] = details["bundleArtifact"]
+    _record(result, label, identifier, "type", old_type, new_type, suggestion["reason"], sid)
+
+    props = node.get("properties") if isinstance(node.get("properties"), dict) else {}
+    descriptors = node.get("propertyDescriptors")
+    property_map: dict[str, str] = details.get("propertyMap") or {}
+    value_map: dict[str, dict[str, str]] = details.get("valueMap") or {}
+    carry = bool(details.get("carryOtherProperties"))
+    why = f"{_short(new_type)} has no equivalent property"
+
+    new_props: dict[str, Any] = {}
+    new_descriptors: dict[str, Any] = {}
+    dropped: list[str] = []
+    for old, value in props.items():
+        new = property_map.get(old) or (old if carry else None)
+        if new is None:
+            dropped.append(old)
+            _record(result, label, identifier, "property-removed", old, None, why, sid)
+            continue
+        mapped = value_map.get(old, {}).get(value, value) if isinstance(value, str) else value
+        new_props[new] = mapped
+        if new != old:
+            _record(result, label, identifier, "property", old, new, f"renamed for {_short(new_type)}", sid)
+        if mapped != value:
+            _record(result, label, identifier, "property-value", f"{new}={value}", f"{new}={mapped}",
+                    f"{_short(new_type)} spells this value differently", sid)
+        if isinstance(descriptors, dict) and old in descriptors:
+            descriptor = dict(descriptors[old] or {})
+            if new != old:
+                descriptor.update({"name": new, "displayName": new})
+            new_descriptors[new] = descriptor
+    for key, value in (details.get("setProperties") or {}).items():
+        new_props[key] = value
+        _record(result, label, identifier, "property-set", key, value,
+                f"{_short(new_type)} needs this to behave like {_short(old_type)}", sid)
+    node["properties"] = new_props
+    if isinstance(descriptors, dict):
+        node["propertyDescriptors"] = new_descriptors
+
+    rel_map: dict[str, str] = details.get("relationshipMap") or {}
+    if rel_map:
+        for key in ("autoTerminatedRelationships", "retriedRelationships"):
+            if isinstance(node.get(key), list):
+                node[key] = [rel_map.get(r, r) for r in node[key]]
+        result.relationship_maps[identifier] = rel_map
+
+    parts = [f"[Flowgenix] Replaced {_short(old_type)} with {_short(new_type)} (accepted suggestion)."]
+    if dropped:
+        parts.append("Not carried over: " + ", ".join(dropped) + ".")
+    if details.get("newRequiredProperties"):
+        parts.append("Configure before starting: " + ", ".join(details["newRequiredProperties"]) + ".")
+    if details.get("note"):
+        parts.append(str(details["note"]))
+    comments = str(node.get("comments") or "")
+    node["comments"] = f"{' '.join(parts)}\n\n{comments}".strip()
+
+
+def _remap_relationships(migrated: dict[str, Any], result: MigrationResult) -> None:
+    """Rename connection relationships leaving a component whose type was swapped."""
+    if not result.relationship_maps:
+        return
+    root = migrated.get("flowContents") or migrated.get("rootGroup") or migrated
+
+    def visit(group: dict[str, Any]) -> None:
+        for conn in group.get("connections") or []:
+            source = conn.get("source") or {}
+            rel_map = result.relationship_maps.get(str(source.get("id") or ""))
+            before = conn.get("selectedRelationships")
+            if not rel_map or not isinstance(before, list):
+                continue
+            after = [rel_map.get(r, r) for r in before]
+            if after != before:
+                conn["selectedRelationships"] = after
+                _record(
+                    result,
+                    conn.get("name") or f"{source.get('name') or 'connection'} connection",
+                    str(conn.get("identifier") or ""),
+                    "relationship",
+                    ", ".join(before),
+                    ", ".join(after),
+                    f"{source.get('name') or 'The source'} was replaced; its relationships have new names.",
+                )
+        for child in group.get("processGroups") or []:
+            visit(child)
+
+    if isinstance(root, dict):
+        visit(root)
+
+
 def _generate_from_xml(
-    doc: FlowDocument, analysis: MigrationAnalysis, by_id: dict[str, ComponentFinding]
+    doc: FlowDocument,
+    analysis: MigrationAnalysis,
+    by_id: dict[str, ComponentFinding],
+    accepted: set[str],
 ) -> MigrationResult:
     """Convert a 1.x XML template into a NiFi flow definition for the target.
 
@@ -709,7 +1032,7 @@ def _generate_from_xml(
         raise ValueError("Template was parsed without retaining its XML tree; cannot convert it.")
 
     def apply(kind: str, identifier: str, node: dict[str, Any]) -> None:
-        _apply_to_node(node, by_id, result, target, kind=kind)
+        _apply_to_node(node, by_id, result, target, accepted)
 
     migrated = snapshot_from_xml_template(
         doc.xml_root,
@@ -813,6 +1136,7 @@ def build_report(
             for f in analysis.findings
             if f.property_changes
         ],
+        "suggestions": analysis.suggestions(),
         "manualInterventionRequired": [f.to_dict() for f in analysis.findings_needing_review()],
         "flowLevelConcerns": analysis.concerns,
         "warnings": analysis.warnings,
@@ -936,17 +1260,38 @@ def render_report_markdown(report: dict[str, Any]) -> str:
             "## Generated flow",
             "",
             f"- Output format: {generation.get('outputFormat')}",
+            f"- Suggestions accepted: {generation.get('acceptedCount', 0)}",
+            f"- Suggestions not accepted: {generation.get('declinedCount', 0)}",
             f"- Changes applied: {generation.get('appliedCount', 0)}",
             f"- Left unchanged for review: {generation.get('skippedCount', 0)}",
             f"- Manual-review markers written into the flow: {generation.get('manualCount', 0)}",
             "",
         ]
+        for warning in generation.get("warnings") or []:
+            lines += [f"> {warning}", ""]
         applied = generation.get("appliedChanges") or []
         if applied:
             lines += ["| Component | Change | From | To |", "| --- | --- | --- | --- |"]
             for c in applied:
                 lines.append(
-                    f"| {c.get('component')} | {c.get('change')} | {c.get('from')} | {c.get('to')} |"
+                    f"| {c.get('component')} | {c.get('change')} | {_cell(c.get('from'))} | {_cell(c.get('to'))} |"
+                )
+            lines.append("")
+        declined = generation.get("declinedSuggestions") or []
+        if declined:
+            lines += [
+                "### Suggestions not accepted",
+                "",
+                "These were left exactly as they were in the source flow.",
+                "",
+                "| Component | Change | From | To | Required |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+            for d in declined:
+                shorten = _short if d.get("kind") == "type" else (lambda v: v or "")
+                lines.append(
+                    f"| {d.get('component')} | {d.get('kind')} | {_cell(shorten(d.get('from')))} "
+                    f"| {_cell(shorten(d.get('to'))) or 'removed'} | {'Yes' if d.get('required') else 'No'} |"
                 )
             lines.append("")
 

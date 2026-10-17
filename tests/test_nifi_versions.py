@@ -76,6 +76,41 @@ def test_unknown_minor_falls_back_within_the_same_major_line():
     assert resolved.supports_templates is True
 
 
+def test_120_is_listed_and_resolves_to_itself():
+    v = get_version("1.2.0")
+    assert v is not None
+    assert v.version == "1.2.0"
+    assert v.supports_templates is True
+    assert v.supports_parameter_contexts is False
+    assert all_versions()[0].version == "1.2.0"
+
+
+def test_parameter_contexts_arrive_in_110():
+    assert get_version("1.9.2").supports_parameter_contexts is False
+    assert get_version("1.25.0").supports_parameter_contexts is True
+
+
+def test_unlisted_old_release_resolves_to_the_nearest_older_entry():
+    """1.3.0 must not borrow traits from the newest 1.x release."""
+    resolved = get_version("1.3.0")
+    assert resolved is not None
+    assert resolved.version == "1.2.0"
+
+
+def test_release_older_than_every_entry_resolves_to_the_oldest():
+    resolved = get_version("1.0.0")
+    assert resolved is not None
+    assert resolved.version == "1.2.0"
+
+
+def test_xml_encoding_follows_the_target_release():
+    from flow_schema import xml_encoding_for_version
+
+    assert xml_encoding_for_version("1.2.0") == "1.1"
+    assert xml_encoding_for_version("1.16.3") == "1.2"
+    assert xml_encoding_for_version("1.25.0") == "1.3"
+
+
 def test_completely_unknown_major_returns_none():
     assert get_version("9.9.9") is None
     assert get_version("") is None

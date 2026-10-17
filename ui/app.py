@@ -43,6 +43,8 @@ class MigrationAnalyzeRequest(BaseModel):
 
 class MigrationGenerateRequest(MigrationAnalyzeRequest):
     output_name: str | None = None
+    #: Ids of the analysis suggestions the user accepted. Nothing else is changed.
+    accepted_suggestions: list[str] = Field(default_factory=list)
 
 
 @app.get("/")
@@ -185,8 +187,27 @@ def _run_migration_sync(
     if not generate:
         return
 
-    emit({"type": "status", "message": "Generating the migrated flow…"})
-    generation = generate_migrated_flow(doc, analysis, output_format=requested)
+    accepted = list(getattr(body, "accepted_suggestions", None) or [])
+    emit(
+        {
+            "type": "status",
+            "message": (
+                f"Generating the migrated flow with {len(accepted)} of "
+                f"{len(analysis.suggestions())} suggestion(s) accepted…"
+            ),
+        }
+    )
+    generation = generate_migrated_flow(doc, analysis, output_format=requested, accepted=accepted)
+    if generation.unknown_accepted:
+        emit(
+            {
+                "type": "status",
+                "message": (
+                    f"Ignored {len(generation.unknown_accepted)} accepted suggestion id(s) that "
+                    "do not match this analysis: " + ", ".join(generation.unknown_accepted[:5])
+                ),
+            }
+        )
     artifacts = _build_migration_artifacts(analysis, generation, body.output_name)
     fidelity = _optional(
         "fidelity check", emit, compare_flows, doc, generation.migrated, generation.applied_changes

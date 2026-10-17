@@ -125,6 +125,12 @@ def main() -> int:
         check("GetHTTP removal detected", s["removed"] >= 1, f"removed={s['removed']}")
         check("template concern raised", any(c["key"] == "templates_removed" for c in analysis["concerns"]))
         check("variable warning raised", any("Variable Registry" in w for w in analysis["warnings"]))
+        offered = analysis.get("suggestions") or []
+        check(
+            "suggestions are offered for the Jolt and GetHTTP changes",
+            {s["component"] for s in offered} >= {"Reshape Records", "Fetch Feed"},
+            f"{len(offered)} suggestion(s)",
+        )
     readiness = next((e.get("readiness") for e in events if e.get("type") == "analysis"), None)
     check(
         "import readiness travels with the analysis",
@@ -148,7 +154,8 @@ def main() -> int:
     err = next((e for e in events if e.get("type") == "error"), None)
     check("undetectable version is refused", err is not None and "could not be detected" in err["message"], str(err))
 
-    # 8. Generate the migrated flow + reports
+    # 8. Generate the migrated flow + reports, accepting only the Reshape Records suggestions
+    accepted = [s["id"] for s in (analysis or {}).get("suggestions", []) if s["component"] == "Reshape Records"]
     status, body = post(
         "/api/migration/generate",
         {
@@ -156,6 +163,7 @@ def main() -> int:
             "source_filename": "legacy.xml",
             "source_version": "1.25.0",
             "target_version": "2.11.0",
+            "accepted_suggestions": accepted,
         },
     )
     events = sse_events(body) if status == 200 else []
@@ -167,6 +175,8 @@ def main() -> int:
         gen = generated["generation"]
         check("changes were applied", gen["appliedCount"] > 0, f"applied={gen['appliedCount']}")
         check("unsafe components were skipped", gen["skippedCount"] > 0, f"skipped={gen['skippedCount']}")
+        check("accepted suggestions are reported", gen["acceptedCount"] == len(accepted), f"accepted={gen['acceptedCount']}")
+        check("the rest are reported as not accepted", gen["declinedCount"] > 0, f"declined={gen['declinedCount']}")
 
         for key, label in (
             ("migratedFlow", "migrated flow"),
@@ -200,6 +210,29 @@ def main() -> int:
             "fidelity check passes on the migrated flow",
             fidelity.get("allPassed") is True,
             f"{fidelity.get('passed')}/{fidelity.get('total')}",
+        )
+
+    # 8a. With nothing accepted, no component changes
+    status, body = post(
+        "/api/migration/generate",
+        {
+            "source_text": xml_text,
+            "source_filename": "legacy.xml",
+            "source_version": "1.25.0",
+            "target_version": "2.11.0",
+        },
+    )
+    events = sse_events(body) if status == 200 else []
+    untouched = next((e for e in events if e.get("type") == "generated"), None)
+    check("generate with nothing accepted", untouched is not None, f"{len(events)} events")
+    if untouched:
+        procs = json.loads(untouched["artifacts"]["migratedFlow"]["text"])["flowContents"]["processors"]
+        reshape = next(p for p in procs if p["name"] == "Reshape Records")
+        check("Jolt property kept without acceptance", "Jolt Transformation DSL" in reshape["properties"])
+        check("EVENT_DRIVEN kept without acceptance", reshape["schedulingStrategy"] == "EVENT_DRIVEN")
+        check(
+            "declined required changes are warned about",
+            any("not accepted" in w for w in untouched["generation"]["warnings"]),
         )
 
     # 8b. Same-version XML output on a 1.x target

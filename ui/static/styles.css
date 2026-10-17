@@ -554,6 +554,30 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); margi
 .diff-arrow { color: var(--muted); }
 .change-reason { grid-column: 2; font-size: 12px; color: var(--muted); }
 
+.suggestions { margin-bottom: var(--s4); }
+.suggestions-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin: var(--s4) 0 var(--s1); }
+.suggestions-head .section-label { margin: 0; }
+.suggestions-progress { margin-right: auto; font: 11px var(--mono); color: var(--muted); }
+.suggestions > .hint { margin-bottom: var(--s3); }
+.suggestion-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--s2) var(--s3);
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--rule);
+  cursor: pointer;
+}
+.suggestion-row:last-child { border-bottom: 0; }
+.suggestion-row:has(input:checked) { background: var(--add-wash); }
+.suggestion-row input { margin-top: 3px; accent-color: var(--accent); }
+.suggestion-body { display: grid; gap: var(--s1); min-width: 0; }
+.suggestion-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2); }
+.suggestion-tags { display: flex; flex-wrap: wrap; gap: var(--s1); }
+.suggestion-reason { font-size: 12px; color: var(--muted); }
+.suggestion-facts { display: grid; gap: 2px; font: 12px/1.5 var(--mono); color: var(--ink-2); }
+.suggestion-facts span { overflow-wrap: anywhere; }
+
 /* ---------- preview ---------- */
 
 .preview-toolbar { display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s2); flex-wrap: wrap; }
@@ -735,7 +759,8 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); margi
   .dropzone { padding: var(--s5) var(--s4); }
   .source-actions { gap: var(--s2); }
   .format-toggle label, .checklist label { min-height: 44px; }
-  .format-toggle input, .checklist input { width: 20px; height: 20px; }
+  .format-toggle input, .checklist input, .suggestion-row input { width: 20px; height: 20px; }
+  .suggestion-row { padding-top: var(--s3); padding-bottom: var(--s3); }
   .checklist input { margin-top: 1px; }
   .download { min-height: 44px; }
   .checklist label { grid-template-columns: 24px minmax(0, 1fr); align-items: start; padding-top: var(--s3); padding-bottom: var(--s3); }
@@ -779,7 +804,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); margi
   }
   body { font-size: 11pt; }
   .topbar, .config-pane, .splitter, .tabs, .log-head, .checklist-head button, .changes-filters,
-  .migration-artifacts, .empty-state { display: none !important; }
+  .suggestions-head button, .migration-artifacts, .empty-state { display: none !important; }
   .workspace { display: block; height: auto; overflow: visible; }
   .results-pane { padding: 0; overflow: visible; }
   .results-head .print-only { display: inline; color: #555555; font-size: 10pt; }

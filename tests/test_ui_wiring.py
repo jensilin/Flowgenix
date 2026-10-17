@@ -159,6 +159,34 @@ def test_checklist_ticks_persist_per_flow_and_target(js):
     assert "localStorage.setItem(checklistKey()" in js
 
 
+def test_suggestions_are_opt_in_and_sent_with_generate(js, html, css, server):
+    for element_id in (
+        "suggestions",
+        "suggestions-list",
+        "suggestions-progress",
+        "suggestions-accept-all",
+        "suggestions-clear",
+    ):
+        assert f'id="{element_id}"' in html, f"missing #{element_id}"
+    assert html.index('id="suggestions"') < html.index('id="changes-filters"')
+    assert "accepted_suggestions: list[str]" in server
+    assert "body.accepted_suggestions = [...acceptedIds]" in js
+    # Nothing starts ticked: the set is only filled by the user.
+    assert "const acceptedIds = new Set();" in js
+    reader = js.split("async function readMigrationUpload(", 1)[1].split("\nasync function ", 1)[0]
+    assert "acceptedIds.clear()" in reader
+    for name in ("suggestion-row", "suggestions-head", "suggestion-reason"):
+        assert f".{name}" in css, f".{name} is emitted by app.js but never styled"
+
+
+def test_changing_a_tick_discards_the_generated_file(js):
+    changed = js.split("function suggestionChoicesChanged(", 1)[1].split("\n}", 1)[0]
+    assert "invalidateGeneration()" in changed
+    invalidate = js.split("function invalidateGeneration(", 1)[1].split("\n}", 1)[0]
+    for part in ("URL.revokeObjectURL", "state.generation = null", "syncGenerateButton()"):
+        assert part in invalidate
+
+
 def test_upload_uses_text_in_json_transport(js):
     reader = js.split("async function readMigrationUpload(", 1)[1].split("\nasync function ", 1)[0]
     assert "await file.text()" in reader

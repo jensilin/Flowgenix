@@ -9,8 +9,12 @@ from migration_rules import (
     OUTCOME_ORDER,
     REMOVED,
     UNKNOWN,
+    component_history_for,
+    downgrade_property_rules_for,
     flow_concerns,
+    lifecycle_verdict,
     processor_rule_for,
+    property_name_on,
     property_rules_for,
     rule_summary,
     service_rule_for,
@@ -124,3 +128,74 @@ def test_rule_summary_is_introspectable():
     summary = rule_summary()
     assert summary["processorRules"] > 0
     assert "GetHTTP" in summary["coveredProcessors"]
+    assert "HashContent" in summary["coveredProcessors"]
+    assert "MapCacheClientService" in summary["coveredServices"]
+    assert summary["historyEntries"] > 0
+
+
+# --- Component history --------------------------------------------------------
+
+_STD = "org.apache.nifi.processors.standard."
+
+
+def test_deprecated_but_available_is_an_optional_upgrade():
+    verdict = lifecycle_verdict(_STD + "GetHTTP", "1.2.0", "1.16.3")
+    assert verdict.status == "deprecated"
+    assert verdict.direction == "upgrade"
+    assert verdict.required is False
+    assert verdict.swap_to == _STD + "InvokeHTTP"
+
+
+def test_removed_is_a_required_upgrade():
+    verdict = lifecycle_verdict("GetHTTP", "1.2.0", "2.0.0")
+    assert verdict.status == "removed"
+    assert verdict.required is True
+    assert verdict.swap.relationship_map == {"success": "Response"}
+
+
+def test_not_yet_deprecated_is_available():
+    assert lifecycle_verdict("GetHTTP", "1.2.0", "1.2.0").status == "available"
+    # HashAttribute was deprecated in 1.21.0, so 1.16.3 still treats it as current.
+    assert lifecycle_verdict("HashAttribute", "1.2.0", "1.16.3").status == "available"
+    assert lifecycle_verdict("HashAttribute", "1.2.0", "1.28.1").status == "deprecated"
+
+
+def test_target_older_than_the_type_suggests_the_older_equivalent():
+    verdict = lifecycle_verdict(_STD + "CryptographicHashContent", "2.11.0", "1.2.0")
+    assert verdict.status == "not_available"
+    assert verdict.direction == "downgrade"
+    assert verdict.required is True
+    assert verdict.swap_to == _STD + "HashContent"
+
+
+def test_target_older_than_the_type_with_no_equivalent_has_no_swap():
+    verdict = lifecycle_verdict("org.apache.nifi.kafka.processors.ConsumeKafka", "2.11.0", "1.28.1")
+    assert verdict.status == "not_available"
+    assert verdict.swap_to is None
+
+
+def test_full_class_names_do_not_match_a_different_package():
+    """The 1.x ConsumeKafka_2_6 family must not be confused with 2.x ConsumeKafka."""
+    assert component_history_for("org.apache.nifi.processors.kafka.pubsub.ConsumeKafka") is None
+    assert component_history_for("ConsumeKafka_2_6") is None
+
+
+def test_unknown_types_have_no_history():
+    assert lifecycle_verdict("GetFile", "1.2.0", "2.11.0") is None
+
+
+def test_downgrade_renames_fire_only_when_crossing_the_boundary_downwards():
+    names = {r.old_name: r.new_name for r in downgrade_property_rules_for("InvokeHTTP", "2.11.0", "1.28.1")}
+    assert names["HTTP URL"] == "Remote URL"
+    assert names["Socket Read Timeout"] == "Read Timeout"
+    assert downgrade_property_rules_for("InvokeHTTP", "2.11.0", "2.6.0") == []
+    assert downgrade_property_rules_for("InvokeHTTP", "1.25.0", "1.2.0") == []
+    jolt = downgrade_property_rules_for("JoltTransformJSON", "2.11.0", "1.28.1")
+    assert [(r.old_name, r.new_name) for r in jolt] == [("Jolt Transform", "Jolt Transformation DSL")]
+
+
+def test_swapped_properties_use_the_target_release_spelling():
+    assert property_name_on(_STD + "InvokeHTTP", "Remote URL", "2.11.0") == "HTTP URL"
+    assert property_name_on(_STD + "InvokeHTTP", "Remote URL", "1.28.1") == "Remote URL"
+    assert property_name_on(_STD + "InvokeHTTP", "HTTP Method", "2.11.0") == "HTTP Method"
+    assert property_name_on("GetFile", "Remote URL", "2.11.0") == "Remote URL"

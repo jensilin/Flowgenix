@@ -180,6 +180,8 @@ XML_ENCODING_ATTR_ALIASES: tuple[str, ...] = ("encoding-version", "encodingVersi
 
 def xml_encoding_for_version(nifi_version: str) -> str:
     """Template encoding-version written for a 1.x target."""
+    if parse_version(nifi_version) < (1, 4, 0):
+        return "1.1"
     if parse_version(nifi_version) < (1, 21, 0):
         return "1.2"
     return "1.3"
