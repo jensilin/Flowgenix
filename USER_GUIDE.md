@@ -120,7 +120,9 @@ that matches the **target** 1.x release (`1.2` before 1.21, `1.3` from 1.21 on).
 Always applied, because the target format needs them:
 
 - XML ↔ JSON conversion and the target's JSON fields
-- NAR bundle versions restamped to the target release
+- Apache NAR bundle versions restamped to the target release. Third-party NARs
+  keep their own version, since they are released separately; make sure a build
+  of each one is installed on the target.
 - Dropping the Variable Registry block when targeting 2.x (values are listed in
   the report; `${var}` expressions are **not** rewritten, because that syntax is
   also valid attribute lookup)
@@ -146,9 +148,17 @@ change between releases, and commenting every one of them would rewrite a flow
 that needed no edits.
 
 The migrated file is a faithful copy of the canvas otherwise: identifiers,
-positions, properties, property descriptors, `annotationData`, auto-terminated
-and retried relationships, connection endpoints, funnels, and the process-group
-hierarchy all survive. Processors arrive enabled but not running, exactly as an
+positions, properties, property descriptors, `annotationData`, scheduling and
+concurrency settings, styles, auto-terminated and retried relationships,
+connection endpoints, bends, prioritizers and load balancing, ports, funnels,
+labels, remote process groups, and the process-group hierarchy all survive, in
+JSON and in XML. An XML template for an older 1.x release leaves out settings
+that release did not have (retry before 1.16, load balancing before 1.8).
+
+You can migrate a file Flowgenix already migrated. Its earlier provenance note is
+replaced rather than repeated. A `[MANUAL REVIEW REQUIRED]` banner from the earlier
+run is removed when the new target does not need review, and the Changes tab
+lists that as *note removed*. Processors arrive enabled but not running, exactly as an
 import behaves. The test suite checks this with a separate comparison
 (`fidelity.py`); `python tests/check_template_fidelity.py your-file.xml 2.6.0`
 runs it on any file.

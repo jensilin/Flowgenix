@@ -26,7 +26,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any
 
-from flow_schema import xml_children, xml_encoding_of
+from flow_schema import follows_nifi_release, xml_children, xml_encoding_of
 from nifi_versions import parse_version
 
 FORMAT_XML_TEMPLATE = "xml_template"
@@ -229,6 +229,15 @@ def _walk_xml_group(node: ET.Element, doc: FlowDocument, group_path: str) -> Non
                 kind="label",
                 identifier=_xml_text(label, "id"),
                 name=_xml_text(label, "label") or "label",
+                group_path=group_path,
+            )
+        )
+    for rpg in xml_children(node, "remoteProcessGroups"):
+        doc.components.append(
+            Component(
+                kind="rpg",
+                identifier=_xml_text(rpg, "id"),
+                name=_xml_text(rpg, "name") or _xml_text(rpg, "targetUri") or "remote",
                 group_path=group_path,
             )
         )
@@ -623,6 +632,8 @@ def _detect_version_json(data: dict[str, Any], doc: FlowDocument) -> None:
 def _bundle_versions(doc: FlowDocument) -> list[str]:
     out: list[str] = []
     for comp in doc.components:
+        if not follows_nifi_release(comp.bundle):
+            continue
         version = comp.bundle_version
         if version and _SEMVER.match(version):
             out.append(version)

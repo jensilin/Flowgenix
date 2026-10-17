@@ -160,6 +160,17 @@ def test_print_report_lives_in_the_log_tab_and_covers_summary_changes_readiness(
     assert "window.print()" in js
 
 
+def test_every_change_kind_the_engine_records_has_a_label(js):
+    engine = (REPO_ROOT / "migration_engine.py").read_text(encoding="utf-8")
+    recorded = set(re.findall(r'_record\(\s*result,\s*[^,]+,\s*[^,]+,\s*"([^"]+)"', engine))
+    recorded |= set(re.findall(r'"change": "([^"]+)"', engine))
+    recorded |= {"property-removed", "schedulingStrategy"}  # passed through from the suggestion kind
+    kinds_block = js.split("const CHANGE_KINDS = {", 1)[1].split("};", 1)[0]
+    labelled = set(re.findall(r'^\s*"?([\w-]+)"?:', kinds_block, re.M))
+    assert "comments" in recorded
+    assert not recorded - labelled, f"change kinds without a label in the Changes tab: {sorted(recorded - labelled)}"
+
+
 def test_downloads_say_how_to_import_the_file(js):
     artifacts = js.split("function renderMigrationArtifacts(", 1)[1].split("\nfunction ", 1)[0]
     assert "Upload template in the Operate palette" in artifacts

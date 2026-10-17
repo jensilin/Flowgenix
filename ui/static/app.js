@@ -93,6 +93,7 @@ const CHANGE_KINDS = {
   relationship: { label: "relationship", tone: "chg" },
   schedulingStrategy: { label: "scheduling", tone: "chg" },
   bundleVersion: { label: "bundle version", tone: "" },
+  comments: { label: "note removed", tone: "del" },
 };
 const SUGGESTION_KINDS = {
   type: "replace type",

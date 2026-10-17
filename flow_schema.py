@@ -18,6 +18,24 @@ from typing import Any
 
 from nifi_versions import parse_version
 
+# --- NAR bundles --------------------------------------------------------------
+
+#: Bundle group of every NAR Apache NiFi ships. Their version is the NiFi release.
+NIFI_BUNDLE_GROUP = "org.apache.nifi"
+
+
+def follows_nifi_release(bundle: Any) -> bool:
+    """True for a NAR whose version is the NiFi release (Apache's own).
+
+    A third-party NAR (`com.example:my-nar:3.4.1`) has its own version line.
+    Stamping the NiFi version onto it names a NAR that does not exist, so NiFi
+    shows the component as a ghost.
+    """
+    if not isinstance(bundle, dict):
+        return True
+    return str(bundle.get("group") or NIFI_BUNDLE_GROUP) == NIFI_BUNDLE_GROUP
+
+
 # --- JSON flow definition -----------------------------------------------------
 
 JSON_SNAPSHOT_BASE: frozenset[str] = frozenset(
@@ -172,6 +190,7 @@ XML_COLLECTION_ALIASES: dict[str, tuple[str, ...]] = {
     "outputPorts": ("outputPorts", "outputPort"),
     "funnels": ("funnels", "funnel"),
     "labels": ("labels", "label"),
+    "remoteProcessGroups": ("remoteProcessGroups", "remoteProcessGroup"),
     "variables": ("variables", "variable"),
 }
 

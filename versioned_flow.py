@@ -26,13 +26,18 @@ it can rewrite properties or attach manual-review markers.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 import xml.etree.ElementTree as ET
 from flow_schema import (
+    NIFI_BUNDLE_GROUP,
+    follows_nifi_release,
     xml_children,
     xml_encoding_attribute,
     xml_encoding_for_version,
 )
+from nifi_versions import parse_version
 from typing import Any, Callable
 
 #: Signature of the callback that applies migration decisions to a component.
@@ -54,7 +59,7 @@ def snapshot_from_xml_template(
         snippet = root
 
     flow_name = _text(root, "name") or "migrated-flow"
-    root_id = _text(root, "groupId") or _new_id()
+    root_id = _text(root, "groupId") or _id_for(snippet)
 
     # A template whose snippet holds exactly one process group is the common
     # case ("download template" on a group). Promote that group to the root so
@@ -106,7 +111,10 @@ def snapshot_from_xml_template(
 def _has_direct_components(node: ET.Element) -> bool:
     return any(
         xml_children(node, tag)
-        for tag in ("processors", "connections", "controllerServices", "funnels", "inputPorts", "outputPorts")
+        for tag in (
+            "processors", "connections", "controllerServices", "funnels", "inputPorts",
+            "outputPorts", "labels", "remoteProcessGroups",
+        )
     )
 
 
@@ -116,7 +124,7 @@ def _group_to_versioned(
     apply: ApplyFn | None,
     parent_id: str,
 ) -> dict[str, Any]:
-    group_id = _text(group, "id") or _new_id()
+    group_id = _text(group, "id") or _id_for(group)
     contents = group.find("contents")
     source = contents if contents is not None else group
     node = _contents_to_versioned(
@@ -186,6 +194,9 @@ def _contents_to_versioned(
     ]
     funnels = [_funnel_to_versioned(f, group_id) for f in xml_children(contents, "funnels")]
     labels = [_label_to_versioned(l, group_id) for l in xml_children(contents, "labels")]
+    remote_groups = [
+        _rpg_to_versioned(r, group_id) for r in xml_children(contents, "remoteProcessGroups")
+    ]
 
     child_groups = [
         _group_to_versioned(g, target_version, apply, group_id)
@@ -205,7 +216,7 @@ def _contents_to_versioned(
         "funnels": funnels,
         "labels": labels,
         "processGroups": child_groups,
-        "remoteProcessGroups": [],
+        "remoteProcessGroups": remote_groups,
         "variables": _variables(contents),
     }
 
@@ -215,7 +226,7 @@ def _processor_to_versioned(
 ) -> dict[str, Any]:
     config = proc.find("config")
     properties = _properties(config)
-    identifier = _text(proc, "id") or _new_id()
+    identifier = _text(proc, "id") or _id_for(proc)
 
     # A template's `<relationships>` block carries the auto-terminate and retry
     # flags per relationship. `VersionedProcessor` has no `relationships` field —
@@ -275,7 +286,7 @@ def _processor_to_versioned(
 
 
 def _service_to_versioned(svc: ET.Element, target_version: str, group_id: str) -> dict[str, Any]:
-    identifier = _text(svc, "id") or _new_id()
+    identifier = _text(svc, "id") or _id_for(svc)
     return {
         "identifier": identifier,
         "instanceIdentifier": identifier,
@@ -301,7 +312,7 @@ def _connection_to_versioned(conn: ET.Element, group_id: str) -> dict[str, Any]:
     for bend in conn.findall("bends"):
         bends.append({"x": _float(_text(bend, "x")), "y": _float(_text(bend, "y"))})
 
-    identifier = _text(conn, "id") or _new_id()
+    identifier = _text(conn, "id") or _id_for(conn)
     return {
         "identifier": identifier,
         "instanceIdentifier": identifier,
@@ -340,7 +351,7 @@ def _connectable(node: ET.Element | None, group_id: str) -> dict[str, Any]:
 
 
 def _port_to_versioned(port: ET.Element, group_id: str, port_type: str) -> dict[str, Any]:
-    identifier = _text(port, "id") or _new_id()
+    identifier = _text(port, "id") or _id_for(port)
     return {
         "identifier": identifier,
         "instanceIdentifier": identifier,
@@ -359,7 +370,7 @@ def _port_to_versioned(port: ET.Element, group_id: str, port_type: str) -> dict[
 
 
 def _funnel_to_versioned(funnel: ET.Element, group_id: str) -> dict[str, Any]:
-    identifier = _text(funnel, "id") or _new_id()
+    identifier = _text(funnel, "id") or _id_for(funnel)
     return {
         "identifier": identifier,
         "instanceIdentifier": identifier,
@@ -370,7 +381,7 @@ def _funnel_to_versioned(funnel: ET.Element, group_id: str) -> dict[str, Any]:
 
 
 def _label_to_versioned(label: ET.Element, group_id: str) -> dict[str, Any]:
-    identifier = _text(label, "id") or _new_id()
+    identifier = _text(label, "id") or _id_for(label)
     return {
         "identifier": identifier,
         "instanceIdentifier": identifier,
@@ -383,6 +394,69 @@ def _label_to_versioned(label: ET.Element, group_id: str) -> dict[str, Any]:
         "groupIdentifier": group_id,
         "position": _position(label),
     }
+
+
+def _rpg_to_versioned(rpg: ET.Element, group_id: str) -> dict[str, Any]:
+    identifier = _text(rpg, "id") or _id_for(rpg)
+    contents = rpg.find("contents")
+    target_uris = _text(rpg, "targetUris") or _text(rpg, "targetUri")
+    node: dict[str, Any] = {
+        "identifier": identifier,
+        "instanceIdentifier": identifier,
+        "name": _text(rpg, "name") or target_uris,
+        "comments": _text(rpg, "comments"),
+        "targetUri": _text(rpg, "targetUri") or target_uris.split(",")[0].strip(),
+        "targetUris": target_uris,
+        "communicationsTimeout": _text(rpg, "communicationsTimeout") or "30 sec",
+        "yieldDuration": _text(rpg, "yieldDuration") or "10 sec",
+        "transportProtocol": _text(rpg, "transportProtocol") or "RAW",
+        "inputPorts": [
+            _remote_port_to_versioned(p, identifier, "REMOTE_INPUT_PORT")
+            for p in (xml_children(contents, "inputPorts") if contents is not None else [])
+        ],
+        "outputPorts": [
+            _remote_port_to_versioned(p, identifier, "REMOTE_OUTPUT_PORT")
+            for p in (xml_children(contents, "outputPorts") if contents is not None else [])
+        ],
+        "componentType": "REMOTE_PROCESS_GROUP",
+        "groupIdentifier": group_id,
+        "position": _position(rpg),
+    }
+    for key in ("localNetworkInterface", "proxyHost", "proxyUser"):
+        if _text(rpg, key):
+            node[key] = _text(rpg, key)
+    if _text(rpg, "proxyPort"):
+        node["proxyPort"] = _int(_text(rpg, "proxyPort"), 0)
+    return node
+
+
+def _remote_port_to_versioned(port: ET.Element, rpg_id: str, port_type: str) -> dict[str, Any]:
+    identifier = _text(port, "id") or _id_for(port)
+    batch = port.find("batchSettings")
+    node: dict[str, Any] = {
+        "identifier": identifier,
+        "instanceIdentifier": identifier,
+        "name": _text(port, "name"),
+        "comments": _text(port, "comments"),
+        "remoteGroupId": rpg_id,
+        "targetId": _text(port, "targetId") or identifier,
+        "concurrentlySchedulableTaskCount": _int(_text(port, "concurrentlySchedulableTaskCount"), 1),
+        "useCompression": _text(port, "useCompression").lower() == "true",
+        "componentType": port_type,
+        "groupIdentifier": rpg_id,
+        "scheduledState": "ENABLED",
+    }
+    if batch is not None:
+        node["batchSize"] = {
+            k: v
+            for k, v in (
+                ("count", _int(_text(batch, "count"), 0) or None),
+                ("size", _text(batch, "size") or None),
+                ("period", _text(batch, "duration") or None),
+            )
+            if v is not None
+        }
+    return node
 
 
 # --- Small helpers ------------------------------------------------------------
@@ -504,13 +578,15 @@ def _xml_state(scheduled_state: Any) -> str:
 def _bundle(node: ET.Element, target_version: str) -> dict[str, str]:
     bundle = node.find("bundle")
     if bundle is None:
-        return {"group": "org.apache.nifi", "artifact": "nifi-standard-nar", "version": target_version}
-    return {
-        "group": _text(bundle, "group") or "org.apache.nifi",
+        return {"group": NIFI_BUNDLE_GROUP, "artifact": "nifi-standard-nar", "version": target_version}
+    out = {
+        "group": _text(bundle, "group") or NIFI_BUNDLE_GROUP,
         "artifact": _text(bundle, "artifact") or "nifi-standard-nar",
-        # The NAR version follows the NiFi release, so it must be re-stamped.
-        "version": target_version,
+        "version": _text(bundle, "version") or target_version,
     }
+    if follows_nifi_release(out):
+        out["version"] = target_version
+    return out
 
 
 def _position(node: ET.Element) -> dict[str, float]:
@@ -546,8 +622,17 @@ def _float(value: str) -> float:
         return 0.0
 
 
-def _new_id() -> str:
-    return str(uuid.uuid4())
+_ID_NAMESPACE = uuid.UUID("6f1c2a52-6c55-4d7e-9a1f-0f5c2b8e9d41")
+
+
+def _id_for(element: ET.Element) -> str:
+    """A stable id for an element that has none, so the same file always
+    produces the same output (and re-imports keep matching components)."""
+    return str(uuid.uuid5(_ID_NAMESPACE, hashlib.sha256(ET.tostring(element)).hexdigest()))
+
+
+def _new_id(node: Any = None) -> str:
+    return str(uuid.uuid5(_ID_NAMESPACE, json.dumps(node, sort_keys=True, default=str)))
 
 
 # --- JSON snapshot → XML template --------------------------------------------
@@ -568,7 +653,7 @@ def template_from_snapshot(snapshot: dict[str, Any], target_version: str) -> str
     template.set(xml_encoding_attribute(), encoding)
     _set_text(template, "description", str(root_group.get("comments") or "Migrated by Flowgenix"))
     _set_text(template, "name", str(root_group.get("name") or "migrated-flow"))
-    _set_text(template, "groupId", str(root_group.get("identifier") or _new_id()))
+    _set_text(template, "groupId", str(root_group.get("identifier") or _new_id(root_group)))
 
     snippet = ET.SubElement(template, "snippet")
     snippet.append(_group_to_xml(root_group, target_version))
@@ -580,7 +665,7 @@ def template_from_snapshot(snapshot: dict[str, Any], target_version: str) -> str
 
 def _group_to_xml(group: dict[str, Any], target_version: str) -> ET.Element:
     node = ET.Element("processGroups")
-    _set_text(node, "id", str(group.get("identifier") or _new_id()))
+    _set_text(node, "id", str(group.get("identifier") or _new_id(group)))
     _set_text(node, "name", str(group.get("name") or "group"))
     comments = str(group.get("comments") or "")
     if comments:
@@ -590,6 +675,14 @@ def _group_to_xml(group: dict[str, Any], target_version: str) -> ET.Element:
     _set_text(
         node, "flowfileOutboundPolicy", str(group.get("flowFileOutboundPolicy") or "STREAM_WHEN_AVAILABLE")
     )
+    for key, default in (
+        ("defaultFlowFileExpiration", "0 sec"),
+        ("defaultBackPressureObjectThreshold", 10000),
+        ("defaultBackPressureDataSizeThreshold", "1 GB"),
+    ):
+        value = group.get(key)
+        if value not in (None, "") and str(value) != str(default):
+            _set_text(node, key, str(value))
 
     contents = ET.SubElement(node, "contents")
     for proc in group.get("processors") or []:
@@ -597,7 +690,7 @@ def _group_to_xml(group: dict[str, Any], target_version: str) -> ET.Element:
     for svc in group.get("controllerServices") or []:
         contents.append(_service_to_xml(svc, target_version))
     for conn in group.get("connections") or []:
-        contents.append(_connection_to_xml(conn))
+        contents.append(_connection_to_xml(conn, target_version))
     for port in group.get("inputPorts") or []:
         contents.append(_port_to_xml(port, "inputPorts"))
     for port in group.get("outputPorts") or []:
@@ -606,6 +699,8 @@ def _group_to_xml(group: dict[str, Any], target_version: str) -> ET.Element:
         contents.append(_funnel_to_xml(funnel))
     for label in group.get("labels") or []:
         contents.append(_label_to_xml(label))
+    for rpg in group.get("remoteProcessGroups") or []:
+        contents.append(_rpg_to_xml(rpg))
     for child in group.get("processGroups") or []:
         contents.append(_group_to_xml(child, target_version))
 
@@ -620,11 +715,12 @@ def _group_to_xml(group: dict[str, Any], target_version: str) -> ET.Element:
 
 def _processor_to_xml(proc: dict[str, Any], target_version: str) -> ET.Element:
     node = ET.Element("processors")
-    _set_text(node, "id", str(proc.get("identifier") or proc.get("id") or _new_id()))
+    _set_text(node, "id", str(proc.get("identifier") or proc.get("id") or _new_id(proc)))
     _set_text(node, "name", str(proc.get("name") or ""))
     _set_text(node, "type", str(proc.get("type") or ""))
     _bundle_xml(node, proc.get("bundle"), target_version)
     _position_xml(node, proc.get("position"))
+    _style_xml(node, proc.get("style"))
     config = ET.SubElement(node, "config")
     _set_text(config, "schedulingStrategy", str(proc.get("schedulingStrategy") or "TIMER_DRIVEN"))
     _set_text(config, "schedulingPeriod", str(proc.get("schedulingPeriod") or "0 sec"))
@@ -632,12 +728,27 @@ def _processor_to_xml(proc: dict[str, Any], target_version: str) -> ET.Element:
     _set_text(config, "penaltyDuration", str(proc.get("penaltyDuration") or "30 sec"))
     _set_text(config, "yieldDuration", str(proc.get("yieldDuration") or "1 sec"))
     _set_text(config, "bulletinLevel", str(proc.get("bulletinLevel") or "WARN"))
+    _set_text(
+        config,
+        "concurrentlySchedulableTaskCount",
+        str(_int(str(proc.get("concurrentlySchedulableTaskCount") or 1), 1)),
+    )
+    _set_text(config, "runDurationMillis", str(_int(str(proc.get("runDurationMillis") or 0), 0)))
+    # Per-relationship retry arrived in 1.16; older templates have no such fields.
+    if parse_version(target_version) >= (1, 16, 0):
+        if proc.get("retryCount") is not None:
+            _set_text(config, "retryCount", str(_int(str(proc.get("retryCount")), 10)))
+        if proc.get("backoffMechanism"):
+            _set_text(config, "backoffMechanism", str(proc.get("backoffMechanism")))
+        if proc.get("maxBackoffPeriod"):
+            _set_text(config, "maxBackoffPeriod", str(proc.get("maxBackoffPeriod")))
     comments = str(proc.get("comments") or "")
     if comments:
         _set_text(config, "comments", comments)
     annotation = str(proc.get("annotationData") or "")
     if annotation:
         _set_text(config, "annotationData", annotation)
+    _descriptors_xml(config, proc.get("propertyDescriptors"))
     _properties_xml(config, proc.get("properties"))
 
     # A template lists every relationship once, with its flags; the flow
@@ -657,20 +768,26 @@ def _processor_to_xml(proc: dict[str, Any], target_version: str) -> ET.Element:
 
 def _service_to_xml(svc: dict[str, Any], target_version: str) -> ET.Element:
     node = ET.Element("controllerServices")
-    _set_text(node, "id", str(svc.get("identifier") or svc.get("id") or _new_id()))
+    _set_text(node, "id", str(svc.get("identifier") or svc.get("id") or _new_id(svc)))
     _set_text(node, "name", str(svc.get("name") or ""))
     _set_text(node, "type", str(svc.get("type") or ""))
     comments = str(svc.get("comments") or "")
     if comments:
         _set_text(node, "comments", comments)
+    annotation = str(svc.get("annotationData") or "")
+    if annotation:
+        _set_text(node, "annotationData", annotation)
+    if svc.get("bulletinLevel"):
+        _set_text(node, "bulletinLevel", str(svc.get("bulletinLevel")))
     _bundle_xml(node, svc.get("bundle"), target_version)
+    _descriptors_xml(node, svc.get("propertyDescriptors"))
     _properties_xml(node, svc.get("properties"))
     return node
 
 
-def _connection_to_xml(conn: dict[str, Any]) -> ET.Element:
+def _connection_to_xml(conn: dict[str, Any], target_version: str) -> ET.Element:
     node = ET.Element("connections")
-    _set_text(node, "id", str(conn.get("identifier") or conn.get("id") or _new_id()))
+    _set_text(node, "id", str(conn.get("identifier") or conn.get("id") or _new_id(conn)))
     if conn.get("name"):
         _set_text(node, "name", str(conn.get("name")))
     _connectable_xml(node, "source", conn.get("source"))
@@ -688,6 +805,23 @@ def _connection_to_xml(conn: dict[str, Any]) -> ET.Element:
         str(conn.get("backPressureDataSizeThreshold") or "1 GB"),
     )
     _set_text(node, "flowFileExpiration", str(conn.get("flowFileExpiration") or "0 sec"))
+    for prioritizer in conn.get("prioritizers") or []:
+        _set_text(node, "prioritizers", str(prioritizer))
+    for bend in conn.get("bends") or []:
+        if isinstance(bend, dict):
+            bend_el = ET.SubElement(node, "bends")
+            _set_text(bend_el, "x", str(float(bend.get("x") or 0)))
+            _set_text(bend_el, "y", str(float(bend.get("y") or 0)))
+    _set_text(node, "labelIndex", str(_int(str(conn.get("labelIndex", 1)), 1)))
+    _set_text(node, "zIndex", str(_int(str(conn.get("zIndex", 0)), 0)))
+    # Cluster load balancing arrived in 1.8.
+    if parse_version(target_version) >= (1, 8, 0):
+        _set_text(node, "loadBalanceStrategy", str(conn.get("loadBalanceStrategy") or "DO_NOT_LOAD_BALANCE"))
+        if conn.get("partitioningAttribute"):
+            _set_text(node, "loadBalancePartitionAttribute", str(conn.get("partitioningAttribute")))
+        _set_text(
+            node, "loadBalanceCompression", str(conn.get("loadBalanceCompression") or "DO_NOT_COMPRESS")
+        )
     return node
 
 
@@ -703,33 +837,133 @@ def _connectable_xml(parent: ET.Element, tag: str, data: Any) -> None:
 
 def _port_to_xml(port: dict[str, Any], tag: str) -> ET.Element:
     node = ET.Element(tag)
-    _set_text(node, "id", str(port.get("identifier") or port.get("id") or _new_id()))
+    _set_text(node, "id", str(port.get("identifier") or port.get("id") or _new_id(port)))
     _set_text(node, "name", str(port.get("name") or ""))
     _position_xml(node, port.get("position"))
+    comments = str(port.get("comments") or "")
+    if comments:
+        _set_text(node, "comments", comments)
+    _set_text(
+        node,
+        "concurrentlySchedulableTaskCount",
+        str(_int(str(port.get("concurrentlySchedulableTaskCount") or 1), 1)),
+    )
+    if port.get("allowRemoteAccess"):
+        _set_text(node, "allowRemoteAccess", "true")
+    _set_text(node, "state", _xml_state(port.get("scheduledState")))
     return node
 
 
 def _funnel_to_xml(funnel: dict[str, Any]) -> ET.Element:
     node = ET.Element("funnels")
-    _set_text(node, "id", str(funnel.get("identifier") or funnel.get("id") or _new_id()))
+    _set_text(node, "id", str(funnel.get("identifier") or funnel.get("id") or _new_id(funnel)))
     _position_xml(node, funnel.get("position"))
     return node
 
 
 def _label_to_xml(label: dict[str, Any]) -> ET.Element:
     node = ET.Element("labels")
-    _set_text(node, "id", str(label.get("identifier") or label.get("id") or _new_id()))
+    _set_text(node, "id", str(label.get("identifier") or label.get("id") or _new_id(label)))
     _set_text(node, "label", str(label.get("label") or label.get("name") or ""))
     _position_xml(node, label.get("position"))
+    _set_text(node, "width", str(float(label.get("width") or 150.0)))
+    _set_text(node, "height", str(float(label.get("height") or 50.0)))
+    _style_xml(node, label.get("style"))
+    if label.get("zIndex"):
+        _set_text(node, "zIndex", str(_int(str(label.get("zIndex")), 0)))
+    return node
+
+
+def _rpg_to_xml(rpg: dict[str, Any]) -> ET.Element:
+    node = ET.Element("remoteProcessGroups")
+    identifier = str(rpg.get("identifier") or rpg.get("id") or _new_id(rpg))
+    _set_text(node, "id", identifier)
+    _position_xml(node, rpg.get("position"))
+    comments = str(rpg.get("comments") or "")
+    if comments:
+        _set_text(node, "comments", comments)
+    _set_text(node, "communicationsTimeout", str(rpg.get("communicationsTimeout") or "30 sec"))
+    contents = ET.SubElement(node, "contents")
+    for key, tag in (("inputPorts", "inputPorts"), ("outputPorts", "outputPorts")):
+        for port in rpg.get(key) or []:
+            if isinstance(port, dict):
+                contents.append(_remote_port_to_xml(port, tag, identifier))
+    _set_text(node, "name", str(rpg.get("name") or ""))
+    for key in ("localNetworkInterface", "proxyHost", "proxyPort", "proxyUser"):
+        if rpg.get(key) not in (None, ""):
+            _set_text(node, key, str(rpg.get(key)))
+    target_uris = str(rpg.get("targetUris") or rpg.get("targetUri") or "")
+    _set_text(node, "targetUri", str(rpg.get("targetUri") or target_uris.split(",")[0].strip()))
+    _set_text(node, "targetUris", target_uris)
+    _set_text(node, "transportProtocol", str(rpg.get("transportProtocol") or "RAW"))
+    _set_text(node, "yieldDuration", str(rpg.get("yieldDuration") or "10 sec"))
+    return node
+
+
+def _remote_port_to_xml(port: dict[str, Any], tag: str, rpg_id: str) -> ET.Element:
+    node = ET.Element(tag)
+    identifier = str(port.get("identifier") or port.get("id") or _new_id(port))
+    _set_text(node, "id", identifier)
+    _set_text(node, "targetId", str(port.get("targetId") or identifier))
+    _set_text(node, "groupId", rpg_id)
+    _set_text(node, "name", str(port.get("name") or ""))
+    comments = str(port.get("comments") or "")
+    if comments:
+        _set_text(node, "comments", comments)
+    _set_text(
+        node,
+        "concurrentlySchedulableTaskCount",
+        str(_int(str(port.get("concurrentlySchedulableTaskCount") or 1), 1)),
+    )
+    _set_text(node, "useCompression", "true" if port.get("useCompression") else "false")
+    batch = port.get("batchSize")
+    if isinstance(batch, dict) and batch:
+        batch_el = ET.SubElement(node, "batchSettings")
+        if batch.get("count"):
+            _set_text(batch_el, "count", str(batch["count"]))
+        if batch.get("size"):
+            _set_text(batch_el, "size", str(batch["size"]))
+        if batch.get("period"):
+            _set_text(batch_el, "duration", str(batch["period"]))
     return node
 
 
 def _bundle_xml(parent: ET.Element, bundle: Any, target_version: str) -> None:
     data = bundle if isinstance(bundle, dict) else {}
     node = ET.SubElement(parent, "bundle")
-    _set_text(node, "group", str(data.get("group") or "org.apache.nifi"))
+    _set_text(node, "group", str(data.get("group") or NIFI_BUNDLE_GROUP))
     _set_text(node, "artifact", str(data.get("artifact") or "nifi-standard-nar"))
-    _set_text(node, "version", target_version)
+    version = target_version
+    if not follows_nifi_release(data) and data.get("version"):
+        version = str(data["version"])
+    _set_text(node, "version", version)
+
+
+def _style_xml(parent: ET.Element, style: Any) -> None:
+    if not isinstance(style, dict) or not style:
+        return
+    wrapper = ET.SubElement(parent, "style")
+    for key, value in style.items():
+        entry = ET.SubElement(wrapper, "entry")
+        _set_text(entry, "key", str(key))
+        _set_text(entry, "value", "" if value is None else str(value))
+
+
+def _descriptors_xml(parent: ET.Element, descriptors: Any) -> None:
+    if not isinstance(descriptors, dict) or not descriptors:
+        return
+    wrapper = ET.SubElement(parent, "descriptors")
+    for key, data in descriptors.items():
+        if not isinstance(data, dict):
+            continue
+        entry = ET.SubElement(wrapper, "entry")
+        _set_text(entry, "key", str(key))
+        value = ET.SubElement(entry, "value")
+        name = str(data.get("name") or key)
+        _set_text(value, "name", name)
+        _set_text(value, "displayName", str(data.get("displayName") or name))
+        _set_text(value, "dynamic", "true" if data.get("dynamic") else "false")
+        _set_text(value, "sensitive", "true" if data.get("sensitive") else "false")
 
 
 def _position_xml(parent: ET.Element, position: Any) -> None:

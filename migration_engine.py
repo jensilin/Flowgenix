@@ -33,7 +33,7 @@ from flow_document import (
     Component,
     FlowDocument,
 )
-from flow_schema import apply_json_dialect
+from flow_schema import NIFI_BUNDLE_GROUP, apply_json_dialect, follows_nifi_release
 from migration_rules import (
     COMPATIBLE,
     CONFIG_CHANGE,
@@ -799,7 +799,17 @@ def _apply_to_node(
     result.accepted.extend(s["id"] for s in chosen)
 
     # Never rewrite something that has no trustworthy mechanical fix. Mark it.
-    if finding.block_auto_migration and not swapped:
+    needs_review = finding.block_auto_migration and not swapped
+    comments = str(node.get("comments") or "")
+    if not needs_review and "[MANUAL REVIEW REQUIRED" in comments:
+        # Left by an earlier Flowgenix run against a target that needed review.
+        node["comments"] = _without_banner(comments)
+        _record(
+            result, label, identifier, "comments", "manual-review note", None,
+            f"No manual review needed on NiFi {target.version if target else 'the target'}; removed the note an "
+            "earlier Flowgenix migration left.",
+        )
+    if needs_review:
         result.manual_markers.append(
             {
                 "component": label,
@@ -811,7 +821,7 @@ def _apply_to_node(
                 "recommendation": finding.recommendation,
             }
         )
-        comments = str(node.get("comments") or "")
+        comments = _without_banner(comments)
         banner = (
             f"[MANUAL REVIEW REQUIRED — {finding.outcome}] {finding.explanation} "
             f"{finding.recommendation}".strip()
@@ -833,7 +843,12 @@ def _apply_to_node(
 
     # Re-stamp the NAR bundle so the target loads the right version.
     bundle = node.get("bundle")
-    if isinstance(bundle, dict) and target is not None and bundle.get("version"):
+    if (
+        isinstance(bundle, dict)
+        and target is not None
+        and bundle.get("version")
+        and follows_nifi_release(bundle)
+    ):
         old_version = bundle.get("version")
         if old_version != target.version:
             bundle["version"] = target.version
@@ -847,6 +862,12 @@ def _apply_to_node(
                     "reason": "NAR bundle version follows the NiFi release",
                 }
             )
+
+
+def _without_banner(comments: str) -> str:
+    return "\n\n".join(
+        p for p in comments.split("\n\n") if not p.strip().startswith("[MANUAL REVIEW REQUIRED")
+    ).strip()
 
 
 def _record(
@@ -918,6 +939,7 @@ def _apply_type_swap(
     bundle = node.get("bundle")
     if details.get("bundleArtifact") and isinstance(bundle, dict):
         bundle["artifact"] = details["bundleArtifact"]
+        bundle["group"] = NIFI_BUNDLE_GROUP
     _record(result, label, identifier, "type", old_type, new_type, suggestion["reason"], sid)
 
     props = node.get("properties") if isinstance(node.get("properties"), dict) else {}
@@ -1038,13 +1060,6 @@ def _generate_from_xml(
         doc.xml_root,
         target.version if target else analysis.target_version,
         apply=apply,
-        comments=(
-            f"Migrated from a NiFi {analysis.source_version} XML template to a NiFi "
-            f"{analysis.target_version} flow definition by Flowgenix "
-            f"(source file: {analysis.filename}). NiFi 2.x cannot import XML templates, so "
-            "the template's contents were converted to this flow definition. Components are "
-            "imported stopped — review them before starting the flow."
-        ),
     )
 
     if doc.variables:
@@ -1077,10 +1092,18 @@ def _stamp_provenance(migrated: Any, analysis: MigrationAnalysis) -> None:
     if not isinstance(migrated, dict):
         return
 
-    note = (
+    notes = [
         f"[Flowgenix migration] NiFi {analysis.source_version} → {analysis.target_version}, "
         f"from {analysis.filename} ({analysis.source_format})."
-    )
+    ]
+    if analysis.source_format == FORMAT_XML_TEMPLATE:
+        notes.append(
+            f"Migrated from a NiFi {analysis.source_version} XML template to a NiFi "
+            f"{analysis.target_version} flow definition by Flowgenix "
+            f"(source file: {analysis.filename}). NiFi 2.x cannot import XML templates, so "
+            "the template's contents were converted to this flow definition. Components are "
+            "imported stopped — review them before starting the flow."
+        )
     root = None
     for key in ("flowContents", "rootGroup"):
         if isinstance(migrated.get(key), dict):
@@ -1089,8 +1112,21 @@ def _stamp_provenance(migrated: Any, analysis: MigrationAnalysis) -> None:
     if root is None:
         return
 
-    existing = str(root.get("comments") or "")
-    root["comments"] = f"{note}\n\n{existing}".strip()
+    # A file Flowgenix already migrated carries the previous run's notes; they
+    # describe a migration that this one supersedes.
+    kept = [
+        p
+        for p in str(root.get("comments") or "").split("\n\n")
+        if p.strip() and not _is_flowgenix_note(p)
+    ]
+    root["comments"] = "\n\n".join(notes + kept).strip()
+
+
+def _is_flowgenix_note(paragraph: str) -> bool:
+    text = paragraph.strip()
+    return text.startswith("[Flowgenix migration]") or (
+        text.startswith("Migrated from a NiFi ") and "by Flowgenix" in text
+    )
 
 
 def migrated_json_text(result: MigrationResult) -> str:

@@ -102,8 +102,10 @@ the result is identical either way.
 
 ## What it changes
 
-Format changes always happen: XML ↔ JSON, NAR bundle versions restamped to the
-target, and the JSON fields the target expects.
+Format changes always happen: XML ↔ JSON, Apache NAR bundle versions restamped
+to the target, and the JSON fields the target expects. Third-party NARs (any
+bundle group other than `org.apache.nifi`) keep their own version, and source
+version detection ignores them.
 
 Component changes are **suggestions**, and none is applied unless you tick it:
 replacing a removed or deprecated processor (GetHTTP → InvokeHTTP, PutJMS →
@@ -115,8 +117,12 @@ the target rejects and that you did not change is left as it was and marked
 
 Everything else is copied verbatim, so the imported canvas matches the one you
 exported: identifiers, positions, properties and their descriptors,
-`annotationData`, relationship flags, connection endpoints, and the
-process-group hierarchy. The test suite checks this with `fidelity.py`, which
+`annotationData`, scheduling and concurrency settings, styles, relationship
+flags, connection endpoints, bends, prioritizers and load balancing, ports,
+labels, remote process groups, and the process-group hierarchy, in both JSON and
+XML output. Migrating a file Flowgenix already migrated replaces its earlier
+notes rather than adding more: one provenance note on the root group, and a
+`[MANUAL REVIEW REQUIRED]` banner only where the new target needs one. The test suite checks this with `fidelity.py`, which
 compares the output with the source component by component. For a template the
 source side is read straight from the XML by a separate reader, so a converter
 bug cannot hide itself, and the changes you ticked are not counted as drift.
@@ -162,6 +168,11 @@ of every migration also lands in `./migrations` on the host.
 python -m pytest                       # unit, fidelity and wiring tests
 python tests/smoke_migration_api.py    # end-to-end, against a running server
 ```
+
+The regression pack in `..\flowgenix_testing` migrates every source flow
+between every supported version, in both formats, and checks each output field
+by field. Run it with `python ..\flowgenix_testing\run_regression.py`; its
+README lists what it checks.
 
 The smoke script also runs the fidelity comparison on the flow the server
 returns.
