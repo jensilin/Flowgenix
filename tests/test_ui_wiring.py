@@ -223,6 +223,12 @@ def test_preview_can_show_the_flow_before_and_after_the_ticked_changes(js, html,
         assert f".{name}" in css, f".{name} is used by the preview but never styled"
 
 
+def test_before_after_dropdown_only_shows_when_there_are_changes(js, html):
+    assert 'class="preview-mode hidden"' in html
+    sync = js.split("function syncPreviewControls(", 1)[1].split("\n}", 1)[0]
+    assert 'previewMode.classList.toggle("hidden", !preview.data || offered.length === 0)' in sync
+
+
 def test_preview_and_changes_link_to_each_other(js):
     assert "showInChanges(linked.dataset.component)" in js
     assert 'class="small show-in-preview"' in js

@@ -1027,7 +1027,8 @@ function previewShowsAfter() {
 function syncPreviewControls() {
   const offered = offeredSuggestions();
   const ticked = offered.filter((s) => acceptedIds.has(s.id)).length;
-  previewMode.disabled = !preview.data || offered.length === 0;
+  // With nothing suggested, Before and After are the same flow, so there is no choice to offer.
+  previewMode.classList.toggle("hidden", !preview.data || offered.length === 0);
   previewMode.value = previewShowsAfter() ? "after" : "before";
   previewMode.options[1].textContent = `After: ${ticked} of ${offered.length} ticked change${offered.length === 1 ? "" : "s"}`;
 
