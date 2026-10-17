@@ -2,7 +2,8 @@
 
 Not part of the pytest suite (no `test_` prefix): point it at any real template
 or flow definition to confirm the migrated JSON still describes the same canvas.
-The checks themselves live in `fidelity.py`, which the web app also runs.
+The checks themselves live in `fidelity.py`, which the test suite and the API
+smoke script also run.
 
     python tests/check_template_fidelity.py path/to/template.xml [target_version]
 """

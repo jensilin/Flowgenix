@@ -117,8 +117,6 @@
         <button type="button" role="tab" class="tab" id="tab-summary" data-tab="summary" aria-controls="panel-summary" aria-selected="true">Summary</button>
         <button type="button" role="tab" class="tab" id="tab-changes" data-tab="changes" aria-controls="panel-changes" aria-selected="false">Changes <span id="tab-count-changes" class="tab-count"></span></button>
         <button type="button" role="tab" class="tab" id="tab-preview" data-tab="preview" aria-controls="panel-preview" aria-selected="false">Preview</button>
-        <button type="button" role="tab" class="tab" id="tab-fidelity" data-tab="fidelity" aria-controls="panel-fidelity" aria-selected="false">Fidelity <span id="tab-count-fidelity" class="tab-count"></span></button>
-        <button type="button" role="tab" class="tab" id="tab-checklist" data-tab="checklist" aria-controls="panel-checklist" aria-selected="false">Checklist <span id="tab-count-checklist" class="tab-count"></span></button>
         <button type="button" role="tab" class="tab" id="tab-log" data-tab="log" aria-controls="panel-log" aria-selected="false">Log</button>
       </div>
 
@@ -129,7 +127,7 @@
           <ol>
             <li>Drop a file on the left, paste its text, or load the sample.</li>
             <li>Check the detected version and pick a target.</li>
-            <li>Generate, review the changes and the import checklist, then download.</li>
+            <li>Tick the suggested changes you want, check them in Preview, then Generate and download.</li>
           </ol>
           <button type="button" class="primary js-load-sample">Load sample flow</button>
         </div>
@@ -180,20 +178,9 @@
         </div>
       </div>
 
-      <div class="tab-panel hidden" id="panel-fidelity" role="tabpanel" aria-labelledby="tab-fidelity">
-        <div id="fidelity-body"><p class="panel-empty">Generate the migrated flow to compare it with the source, component by component.</p></div>
-      </div>
-
-      <div class="tab-panel hidden" id="panel-checklist" role="tabpanel" aria-labelledby="tab-checklist" data-print="yes" data-print-title="Import checklist">
-        <div class="checklist-head">
-          <p id="checklist-progress" class="hint"></p>
-          <button type="button" id="print-report" class="small">Print report</button>
-        </div>
-        <div id="checklist-body"><p class="panel-empty">Analyze a flow to build its import checklist.</p></div>
-      </div>
-
       <div class="tab-panel hidden" id="panel-log" role="tabpanel" aria-labelledby="tab-log">
         <div class="log-head">
+          <button type="button" id="print-report" class="small" title="Print the Summary and Changes as a handover report">Print report</button>
           <button type="button" id="export-logs" class="small" disabled>Export logs</button>
         </div>
         <div id="log" class="log" role="log" aria-live="polite"></div>

@@ -378,7 +378,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); margi
   container: results / inline-size;
 }
 /* Long notes are unreadable at full width on a wide monitor; the canvas is not. */
-#panel-summary, #panel-changes, #panel-fidelity, #panel-checklist { max-width: 1240px; }
+#panel-summary, #panel-changes { max-width: 1240px; }
 .results-head { display: flex; align-items: center; gap: var(--s3); min-height: 32px; padding-top: var(--s4); }
 .results-head h2 { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .results-head .print-only { display: none; }
@@ -501,6 +501,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); margi
   background: var(--surface);
 }
 .migration-artifacts .section-label { flex-basis: 100%; margin: 0 0 var(--s1); }
+.migration-artifacts .import-how { flex-basis: 100%; margin: 0; }
 .download {
   display: inline-flex;
   align-items: center;
@@ -646,46 +647,9 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); margi
 .change-group.flash { animation: flash 1.2s ease-out; }
 @keyframes flash { from { background: var(--accent-wash); } }
 
-/* ---------- fidelity ---------- */
-
-.fidelity-head { display: flex; align-items: baseline; gap: var(--s3); margin-bottom: var(--s3); }
-.fidelity-head b { font: 500 28px/1 var(--mono); font-variant-numeric: tabular-nums; }
-.fidelity-head.all-pass b { color: var(--add); }
-.fidelity-head.has-fail b { color: var(--del); }
-.check-list { list-style: none; margin: var(--s3) 0 var(--s4); padding: 0; border: 1px solid var(--rule); border-radius: var(--r-panel); background: var(--surface); }
-.check {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
-  gap: var(--s2);
-  align-items: baseline;
-  padding: var(--s2) var(--s3);
-  border-bottom: 1px solid var(--rule);
-}
-.check:last-child { border-bottom: 0; }
-.check-mark { font: 600 13px var(--mono); }
-.check-ok .check-mark { color: var(--add); }
-.check-fail .check-mark { color: var(--del); }
-.check-count { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
-.check-detail { grid-column: 2 / -1; font: 12px var(--mono); color: var(--del); overflow-wrap: anywhere; }
-
-/* ---------- checklist ---------- */
-
-.checklist-head { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s3); }
-.checklist-head button { margin-left: auto; }
-.checklist-group { margin-bottom: var(--s4); }
-.checklist-group h3 { font-size: 13px; font-weight: 600; margin-bottom: var(--s2); }
-.checklist { list-style: none; margin: 0; padding: 0; border: 1px solid var(--rule); border-radius: var(--r-panel); background: var(--surface); }
-.checklist li { border-bottom: 1px solid var(--rule); }
-.checklist li:last-child { border-bottom: 0; }
-.checklist label { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: var(--s2); padding: var(--s2) var(--s3); cursor: pointer; }
-.checklist input { margin-top: 3px; width: 14px; height: 14px; }
-.checklist .task-text { overflow-wrap: anywhere; }
-.checklist .task-text small { display: block; color: var(--muted); font-size: 12px; }
-.checklist li.done .task-text { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--rule-strong); }
-
 /* ---------- log ---------- */
 
-.log-head { display: flex; justify-content: flex-end; margin-bottom: var(--s2); }
+.log-head { display: flex; justify-content: flex-end; gap: var(--s2); margin-bottom: var(--s2); }
 .log {
   font: 12px/1.6 var(--mono);
   min-height: 160px;
@@ -772,12 +736,10 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); margi
   .tab { min-height: 44px; }
   .dropzone { padding: var(--s5) var(--s4); }
   .source-actions { gap: var(--s2); }
-  .format-toggle label, .checklist label { min-height: 44px; }
-  .format-toggle input, .checklist input, .suggestion-row input { width: 20px; height: 20px; }
+  .format-toggle label { min-height: 44px; }
+  .format-toggle input, .suggestion-row input { width: 20px; height: 20px; }
   .suggestion-row { padding-top: var(--s3); padding-bottom: var(--s3); }
-  .checklist input { margin-top: 1px; }
   .download { min-height: 44px; }
-  .checklist label { grid-template-columns: 24px minmax(0, 1fr); align-items: start; padding-top: var(--s3); padding-bottom: var(--s3); }
 }
 
 /* A four-column table cannot be read in a narrow pane or on a phone. Each
@@ -807,7 +769,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); margi
   * { transition: none !important; animation: none !important; }
 }
 
-/* ---------- print: summary, changes and checklist as a handover report ---------- */
+/* ---------- print: summary, changes and import readiness as a handover report ---------- */
 
 @media print {
   :root, :root[data-theme="dark"] {
@@ -817,15 +779,19 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); margi
     --neutral-wash: #ffffff;
   }
   body { font-size: 11pt; }
-  .topbar, .config-pane, .splitter, .tabs, .log-head, .checklist-head button, .changes-filters,
+  .topbar, .splitter, .tabs, .log-head, .changes-filters,
   .suggestions-head button, .migration-artifacts, .empty-state { display: none !important; }
-  .workspace { display: block; height: auto; overflow: visible; }
+  .workspace { display: flex; flex-direction: column; height: auto; overflow: visible; }
   .results-pane { padding: 0; overflow: visible; }
+  /* Only the readiness problems from the settings pane, after the results. */
+  .config-pane { order: 1; overflow: visible; background: none; border: 0; }
+  .config-pane > .pane-section:not(#section-readiness) { display: none !important; }
+  #section-readiness { padding: 16pt 0 0; border: 0; }
   .results-head .print-only { display: inline; color: #555555; font-size: 10pt; }
   .tab-panel { display: none !important; }
   .tab-panel[data-print="yes"] { display: block !important; break-inside: auto; }
   .tab-panel[data-print="yes"] + .tab-panel[data-print="yes"] { margin-top: 16pt; }
   .tab-panel::before { content: attr(data-print-title); display: block; font: 600 13pt var(--sans); margin-bottom: 6pt; }
   .tab-panel[data-print-empty="yes"] { display: none !important; }
-  .change-group, .notice, .check, .checklist li, .migration-table tr { break-inside: avoid; }
+  .change-group, .notice, .readiness-item, .migration-table tr { break-inside: avoid; }
 }

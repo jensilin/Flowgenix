@@ -35,8 +35,12 @@ apply to either.
 2. Confirm source version (detected from NAR bundle stamps when present).
 3. Pick the target version and output format (JSON, or XML on 1.x targets).
    Changing a version re-runs the analysis.
-4. **Generate**, then download the migrated file and the Markdown/JSON report
-   from the Summary tab.
+4. Tick the suggested changes you want in the **Changes** tab. Nothing is
+   applied unless you tick it. The **Preview** tab draws the flow as it will be
+   with your ticks, and updates as you change them.
+5. **Generate**, then download the migrated file and the Markdown/JSON report
+   from the Summary tab. The button turns into **Download** until you change a
+   tick or a setting.
 
 The download is named after the process group inside the flow, because NiFi
 names an imported group after the file it was uploaded from.
@@ -45,12 +49,10 @@ The results pane has one tab per question you will have:
 
 | Tab | Shows |
 |---|---|
-| Summary | Outcome counts, downloads, version concerns and every component that needs attention |
-| Changes | Each rewrite grouped by component, before → after, filterable by kind |
-| Preview | The source canvas drawn from its own coordinates, coloured by outcome; click a process group to open it |
-| Fidelity | "N of N checks passed": the output compared with the source, component by component |
-| Checklist | Import steps for this flow; ticks are kept in your browser. **Print report** prints Summary, Changes and Checklist |
-| Log | The run log, exportable |
+| Summary | Outcome counts, downloads with how to import them, version concerns and every component that needs attention |
+| Changes | Suggested changes to tick (upgrade or downgrade), then each rewrite grouped by component, before → after |
+| Preview | The canvas at its own coordinates. **Before** shows the source file; **After** shows it with your ticked changes. Click a process group to open it, or a changed processor to see its suggestions |
+| Log | The run log. **Export logs** saves it; **Print report** prints Summary, Changes and Import readiness as a handover document |
 
 Alongside the version analysis, the **Import readiness** panel lists what NiFi
 will complain about after import regardless of version: sensitive values that
@@ -100,19 +102,25 @@ the result is identical either way.
 
 ## What it changes
 
-Deterministic rules rewrite known property names (for example Jolt’s
-`Jolt Transformation DSL` → `Jolt Transform`), restamp NAR bundle versions, and
-convert `EVENT_DRIVEN` scheduling on 2.x. Removed processors (GetHTTP, PostHTTP,
-…) are **left unchanged** and marked for manual review — they are never silently
-replaced.
+Format changes always happen: XML ↔ JSON, NAR bundle versions restamped to the
+target, and the JSON fields the target expects.
+
+Component changes are **suggestions**, and none is applied unless you tick it:
+replacing a removed or deprecated processor (GetHTTP → InvokeHTTP, PutJMS →
+PublishJMS, …), known property renames (Jolt’s `Jolt Transformation DSL` →
+`Jolt Transform`), `EVENT_DRIVEN` → `TIMER_DRIVEN` scheduling on 2.x, and the
+reverse direction when you migrate down to an older release. A component that
+the target rejects and that you did not change is left as it was and marked
+`[MANUAL REVIEW REQUIRED]`.
 
 Everything else is copied verbatim, so the imported canvas matches the one you
 exported: identifiers, positions, properties and their descriptors,
 `annotationData`, relationship flags, connection endpoints, and the
-process-group hierarchy. The Fidelity tab proves it for every generated flow:
-for a template, the source side is read straight from the XML by a separate
-reader, so a converter bug cannot hide itself, and the renames listed under
-Changes are not counted as drift. The same checks run from the command line:
+process-group hierarchy. The test suite checks this with `fidelity.py`, which
+compares the output with the source component by component. For a template the
+source side is read straight from the XML by a separate reader, so a converter
+bug cannot hide itself, and the changes you ticked are not counted as drift.
+The same checks run from the command line against any file:
 
 ```powershell
 python tests/check_template_fidelity.py path\to\template.xml 2.6.0
@@ -151,6 +159,9 @@ of every migration also lands in `./migrations` on the host.
 ## Tests
 
 ```powershell
-python -m pytest                       # unit and wiring tests
+python -m pytest                       # unit, fidelity and wiring tests
 python tests/smoke_migration_api.py    # end-to-end, against a running server
 ```
+
+The smoke script also runs the fidelity comparison on the flow the server
+returns.

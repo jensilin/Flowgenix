@@ -46,34 +46,43 @@ overrides it.
    - **JSON flow definition** — works for 1.16+ and every 2.x. Import via
      *Upload flow definition* / Registry.
    - **XML template** — only when the target is 1.x. NiFi 2.0 removed templates.
-5. **Generate** to produce the converted file plus a report. The downloads
-   appear at the top of the Summary tab. The file is named after the process
-   group inside it, which is the name NiFi will suggest for the imported group.
+5. Open **Changes** and tick the suggested changes you want. None is ticked to
+   start with, and nothing is applied unless you tick it. **Preview** shows the
+   flow with your ticks before you generate anything.
+6. **Generate** to produce the converted file plus a report. The downloads
+   appear at the top of the Summary tab, with a line on how to import the file.
+   The file is named after the process group inside it, which is the name NiFi
+   will suggest for the imported group. Until you change a tick or a setting,
+   the Generate button downloads the same file again.
 
 ## Reading the results
 
 - **Summary** — outcome counts, downloads, version-level concerns (templates
   removed, Variable Registry removed, Java 21) and a table of every component
   that is not simply compatible.
-- **Changes** — every rewrite the generator made, grouped by component, shown
-  as before → after. Filter by kind (type, property, scheduling, bundle
-  version). Components left alone for manual review are listed underneath.
-- **Preview** — the source canvas, drawn at NiFi's own coordinates. Amber boxes
-  change on migration, red ones are removed or need review, and a red square
-  marks an import-readiness fix. Click a process group to open it; the path
-  above the canvas takes you back. Scroll or pinch to zoom, drag to pan,
-  **Fit** to reset.
-- **Fidelity** — appears after Generate. It compares the output with the source
-  (counts, names, types, every property and value, positions, connection
-  endpoints, dangling references) and reports "N of N checks passed". For a
-  template the source is read directly from the XML. Renames listed under
-  Changes are expected and not counted as drift.
-- **Checklist** — the import steps for this particular flow: resolve the
-  flagged components and readiness items, recreate variables as parameters,
-  enable services, start. Ticks are saved in your browser for this file and
-  target. **Print report** prints Summary, Changes and the Checklist as a
-  handover document.
-- **Log** — the run log, with **Export logs**.
+- **Changes** — first the **suggested changes**, grouped by component: replace
+  a removed or deprecated processor, rename a property, change scheduling, or
+  the reverse when you migrate down. Each shows whether the target requires it
+  and what it rewires. Tick the ones you want, or use **Accept all** / **Clear**.
+  **Show in preview** opens that component on the canvas. After Generate, every
+  rewrite the generator made is listed underneath as before → after, filterable
+  by kind, with the components left alone for manual review.
+- **Preview** — the canvas, drawn at NiFi's own coordinates. The dropdown above
+  it switches between:
+  - **Before: source file** — the flow as uploaded. Amber boxes change on
+    migration, red ones are removed or need review.
+  - **After: N of M ticked changes** — the flow as Generate will write it with
+    your current ticks. Green boxes have a ticked change applied (a replaced
+    processor shows its new type and "replaced, was …", and renamed
+    relationships are highlighted). Amber means an optional change is not
+    ticked; red means a required change is not ticked or the component still
+    needs review. It redraws as you tick, before and after Generate.
+
+  Click a process group to open it; the path above the canvas takes you back.
+  Click a changed processor to jump to its suggestions. Scroll or pinch to
+  zoom, drag to pan, **Fit** to reset. The zoom stays put when you switch tabs.
+- **Log** — the run log, with **Export logs**, and **Print report**, which
+  prints Summary, Changes and Import readiness as a handover document.
 
 ## Import readiness
 
@@ -108,18 +117,27 @@ that matches the **target** 1.x release (`1.2` before 1.21, `1.3` from 1.21 on).
 
 ## What the rules change
 
-Applied automatically when safe:
+Always applied, because the target format needs them:
 
+- XML ↔ JSON conversion and the target's JSON fields
 - NAR bundle versions restamped to the target release
-- Known property renames (Jolt `Jolt Transformation DSL` → `Jolt Transform` on 2.x)
-- `EVENT_DRIVEN` scheduling → `TIMER_DRIVEN` on 2.x
 - Dropping the Variable Registry block when targeting 2.x (values are listed in
   the report; `${var}` expressions are **not** rewritten, because that syntax is
   also valid attribute lookup)
 
-Left unchanged and marked `[MANUAL REVIEW REQUIRED]`:
+Suggested, and applied only when you tick them in Changes:
 
-- Removed processors such as GetHTTP / PostHTTP (suggested replacement: InvokeHTTP)
+- Replacing removed or deprecated processors (GetHTTP / PostHTTP → InvokeHTTP,
+  HashContent → CryptographicHashContent, PutJMS → PublishJMS, …), with their
+  properties and relationships carried across
+- Known property renames (Jolt `Jolt Transformation DSL` → `Jolt Transform` on 2.x)
+- `EVENT_DRIVEN` scheduling → `TIMER_DRIVEN` on 2.x
+- The reverse of these when the target is older than the source
+
+Left unchanged and marked `[MANUAL REVIEW REQUIRED]` when you do not tick a
+replacement, or when there is none:
+
+- Removed processors such as GetHTTP / PostHTTP
 - Script engines that 2.x dropped (Jython / JRuby on ExecuteScript)
 
 Types no rule covers are copied through untouched and listed as *not verified*
@@ -131,7 +149,9 @@ The migrated file is a faithful copy of the canvas otherwise: identifiers,
 positions, properties, property descriptors, `annotationData`, auto-terminated
 and retried relationships, connection endpoints, funnels, and the process-group
 hierarchy all survive. Processors arrive enabled but not running, exactly as an
-import behaves.
+import behaves. The test suite checks this with a separate comparison
+(`fidelity.py`); `python tests/check_template_fidelity.py your-file.xml 2.6.0`
+runs it on any file.
 
 ## Importing the result
 
@@ -139,9 +159,10 @@ import behaves.
 - **1.x JSON:** same, from NiFi 1.16 onward.
 - **1.x XML:** *Upload template* on the 1.x UI.
 
-Review every `[MANUAL REVIEW REQUIRED]` comment before starting processors.
-Migrated components are imported stopped. The Checklist tab lists these steps
-for your flow.
+Before starting processors, review every `[MANUAL REVIEW REQUIRED]` comment,
+check the settings of any processor you replaced, and fix the items in the
+Import readiness panel. Migrated components are imported stopped: enable the
+controller services first, then start the processors.
 
 ## Running it elsewhere
 

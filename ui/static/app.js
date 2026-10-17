@@ -51,11 +51,6 @@ const previewSvg = document.getElementById("preview-svg");
 const zoomInBtn = document.getElementById("preview-zoom-in");
 const zoomOutBtn = document.getElementById("preview-zoom-out");
 const fitBtn = document.getElementById("preview-fit");
-const fidelityBody = document.getElementById("fidelity-body");
-const fidelityCount = document.getElementById("tab-count-fidelity");
-const checklistBody = document.getElementById("checklist-body");
-const checklistProgress = document.getElementById("checklist-progress");
-const checklistCount = document.getElementById("tab-count-checklist");
 const printBtn = document.getElementById("print-report");
 const themeToggle = document.getElementById("theme-toggle");
 const themeLabel = document.getElementById("theme-toggle-label");
@@ -63,7 +58,6 @@ const workspaceEl = document.querySelector(".workspace");
 const splitter = document.getElementById("pane-splitter");
 
 const THEME_KEY = "flowgenix.theme";
-const CHECKLIST_KEY = "flowgenix.checklist";
 const SAMPLE_URL = "/static/samples/legacy-intake.xml";
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]", "::1"];
 // Vercel rejects request bodies over 4.5 MB. The file travels inside a JSON
@@ -113,7 +107,6 @@ const state = {
   readiness: null,
   generation: null,
   artifacts: null,
-  fidelity: null,
   running: false,
   runId: 0,
 };
@@ -272,7 +265,7 @@ function selectTab(name) {
     if (active) shown = panel;
   }
   if (shown) revealPanelTop(shown);
-  if (name === "preview") fitPreview();
+  if (name === "preview" && !preview.view) fitPreview();
 }
 
 // A panel switched to while the pane is scrolled down starts under the sticky tab bar.
@@ -357,7 +350,6 @@ function resetResults({ rerun = false } = {}) {
   state.readiness = null;
   state.generation = null;
   state.artifacts = null;
-  state.fidelity = null;
   changeFilter = null;
   statsEl.innerHTML = "";
   statsEl.classList.add("hidden");
@@ -376,10 +368,7 @@ function resetResults({ rerun = false } = {}) {
   changesCount.textContent = "";
   suggestionsEl.classList.add("hidden");
   suggestionsList.innerHTML = "";
-  fidelityBody.innerHTML = `<p class="panel-empty">Generate the migrated flow to compare it with the source, component by component.</p>`;
-  fidelityCount.textContent = "";
   resetPreview({ keepPlace: rerun });
-  renderChecklist();
   syncGenerateButton();
 }
 
@@ -556,7 +545,6 @@ function handleEvent(event) {
     renderMigrationReport(event.analysis);
     renderReadiness(state.readiness);
     renderChanges();
-    renderChecklist();
     refreshPreview();
   }
   if (event.type === "preview") renderPreview(event.preview);
@@ -564,13 +552,10 @@ function handleEvent(event) {
     state.analysis = event.analysis;
     state.generation = event.generation || {};
     state.artifacts = event.artifacts || {};
-    state.fidelity = event.fidelity || null;
     renderMigrationReport(event.analysis);
     renderMigrationArtifacts(state.artifacts);
     syncGenerateButton();
     renderChanges();
-    renderFidelity(state.fidelity);
-    renderChecklist();
     refreshPreview();
     const review = event.analysis?.summary?.manualReview;
     setStatus(review ? "generated · review needed" : "generated", review ? "chg" : "add");
@@ -680,8 +665,15 @@ function renderMigrationArtifacts(artifacts) {
       artifactAnchor({ name, mediaType: "application/json", text, size: text.length }, "Report (JSON)")
     );
   }
+  const howTo = artifacts.migratedXml
+    ? "To import: in NiFi 1.x choose Upload template in the Operate palette, then drag a Template onto the canvas."
+    : artifacts.migratedFlow
+      ? "To import: drag a Process Group onto the NiFi canvas, choose Browse, and pick the downloaded file."
+      : "";
   artifactsEl.classList.toggle("hidden", links.length === 0);
-  artifactsEl.innerHTML = links.length ? `<h3 class="section-label">Downloads</h3>${links.join("")}` : "";
+  artifactsEl.innerHTML = links.length
+    ? `<h3 class="section-label">Downloads</h3>${links.join("")}${howTo ? `<p class="hint import-how">${howTo}</p>` : ""}`
+    : "";
 }
 
 // The server keeps nothing on disk, so each file arrives as text and becomes a
@@ -824,15 +816,11 @@ function invalidateGeneration() {
   artifactUrls = [];
   state.generation = null;
   state.artifacts = null;
-  state.fidelity = null;
   changeFilter = null;
   artifactsEl.innerHTML = "";
   artifactsEl.classList.add("hidden");
-  fidelityBody.innerHTML = `<p class="panel-empty">Generate the migrated flow to compare it with the source, component by component.</p>`;
-  fidelityCount.textContent = "";
   syncGenerateButton();
   renderAppliedChanges();
-  renderChecklist();
   const review = state.analysis?.summary?.manualReview;
   setStatus(review ? "review needed" : "ready", review ? "chg" : "add");
   log("Suggestion choices changed. Generate again to apply them.");
@@ -1339,7 +1327,11 @@ function boundsOf(boxes) {
 function fitPreview() {
   if (!preview.data || !preview.bounds) return;
   const rect = previewStage.getBoundingClientRect();
-  if (!rect.width || !rect.height) return;
+  if (!rect.width || !rect.height) {
+    // Hidden tab: fit when the Preview tab is next shown.
+    preview.view = null;
+    return;
+  }
   const pad = 80;
   const b = preview.bounds;
   // Never magnify past 0.75 screen pixels per canvas unit, so a group with one
@@ -1356,6 +1348,8 @@ function fitPreview() {
 
 function setView(view) {
   preview.view = view;
+  const rect = previewStage.getBoundingClientRect();
+  if (rect.width && rect.height) preview.viewSize = { width: rect.width, height: rect.height };
   previewSvg.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);
 }
 
@@ -1441,186 +1435,19 @@ previewSvg.addEventListener("keydown", (event) => {
 zoomInBtn.addEventListener("click", () => zoomAt(1 / 1.25));
 zoomOutBtn.addEventListener("click", () => zoomAt(1.25));
 fitBtn.addEventListener("click", fitPreview);
-// When the stage changes size (window or splitter), keep the zoom level and the
-// centre the user chose, and only stretch the view to the new aspect ratio.
-let stageSize = null;
-new ResizeObserver(([entry]) => {
-  const { width, height } = entry.contentRect;
-  const before = stageSize;
-  stageSize = width && height ? { width, height } : null;
-  if (!before || !stageSize || !preview.view) return;
+// When the stage changes size (window, splitter, or coming back from another
+// tab), keep the zoom level and the centre the user chose, and only stretch the
+// view to the new aspect ratio.
+new ResizeObserver(() => {
+  const { width, height } = previewStage.getBoundingClientRect();
+  const before = preview.viewSize;
+  if (!width || !height || !before || !preview.view) return;
+  if (width === before.width && height === before.height) return;
   const v = preview.view;
   const w = v.w * (width / before.width);
   const h = v.h * (height / before.height);
   setView({ x: v.x + v.w / 2 - w / 2, y: v.y + v.h / 2 - h / 2, w, h });
 }).observe(previewStage);
-
-// ---------- fidelity ----------
-
-function renderFidelity(report) {
-  if (!report) {
-    fidelityCount.textContent = "";
-    fidelityBody.innerHTML = `<p class="panel-empty">The fidelity check could not run for this flow. See the log.</p>`;
-    return;
-  }
-  fidelityCount.textContent = `${report.passed}/${report.total}`;
-  const sourceNote =
-    report.source === "xml"
-      ? "The source side is read straight from the template XML, independently of the converter."
-      : "Compared against the uploaded flow definition.";
-  const intended = report.intended || {};
-  const intendedParts = [
-    intended.retyped ? `${intended.retyped} replaced type${intended.retyped === 1 ? "" : "s"}` : "",
-    intended.renamedProperties ? `${intended.renamedProperties} renamed propert${intended.renamedProperties === 1 ? "y" : "ies"}` : "",
-    intended.removedProperties ? `${intended.removedProperties} removed propert${intended.removedProperties === 1 ? "y" : "ies"}` : "",
-  ].filter(Boolean);
-  fidelityBody.innerHTML = `
-    <div class="fidelity-head ${report.allPassed ? "all-pass" : "has-fail"}">
-      <b>${report.passed} of ${report.total}</b><span>checks passed</span>
-    </div>
-    <p class="hint">${escapeHtml(sourceNote)}${intendedParts.length ? ` Intended changes are not counted as drift: ${escapeHtml(intendedParts.join(", "))}.` : ""}</p>
-    <ul class="check-list">
-      ${report.checks
-        .map((c) => {
-          const count = c.detail || `${c.checked - c.failed}/${c.checked}`;
-          const examples = c.examples?.length
-            ? `<span class="check-detail">${c.examples.map(escapeHtml).join("<br>")}${c.failed > c.examples.length ? `<br>…and ${c.failed - c.examples.length} more` : ""}</span>`
-            : "";
-          return `<li class="check ${c.passed ? "check-ok" : "check-fail"}">
-            <span class="check-mark" aria-label="${c.passed ? "passed" : "failed"}">${c.passed ? "✓" : "✗"}</span>
-            <span>${escapeHtml(c.label)}</span>
-            <span class="check-count">${escapeHtml(count)}</span>
-            ${examples}
-          </li>`;
-        })
-        .join("")}
-    </ul>
-    ${(report.notes || []).map((n) => notice("Note", n, false)).join("")}`;
-}
-
-// ---------- checklist ----------
-
-function checklistKey() {
-  const u = state.upload;
-  return u ? `${CHECKLIST_KEY}:${u.filename}|${u.size}|${targetEl.value}` : "";
-}
-
-function loadTicks() {
-  try {
-    return JSON.parse(localStorage.getItem(checklistKey()) || "{}");
-  } catch {
-    return {};
-  }
-}
-
-function buildChecklist() {
-  const analysis = state.analysis;
-  if (!analysis) return [];
-  const summary = analysis.summary || {};
-  const doc = analysis.document || {};
-  const targetMajor = Number(String(summary.targetVersion || "").split(".")[0]);
-  const isXml = Boolean(state.artifacts?.migratedXml) || (!state.artifacts && selectedOutputFormat() === "xml_template");
-  const fileName = state.artifacts?.migratedFlow?.name || state.artifacts?.migratedXml?.name || "the migrated file";
-  const readiness = state.readiness?.items || [];
-
-  const importSteps = [
-    {
-      id: "step:import",
-      text: isXml
-        ? `Upload ${fileName} as a template (Operate palette → Upload template), then drag a Template onto the canvas.`
-        : `Drag a Process Group onto the NiFi canvas, choose Browse, and upload ${fileName}.`,
-    },
-  ];
-
-  const applied = new Set(state.generation?.acceptedSuggestions || []);
-  const swaps = (analysis.suggestions || []).filter((s) => s.kind === "type" && applied.has(s.id));
-  const swapped = new Set(swaps.map((s) => s.componentId));
-  const fixes = [];
-  for (const s of swaps) {
-    const d = s.details || {};
-    const configure = d.newRequiredProperties?.length ? `Configure ${d.newRequiredProperties.join(", ")}.` : "";
-    fixes.push({
-      id: `swap:${s.id}`,
-      text: `${s.component}: check the settings of the new ${shortType(s.to)}`,
-      note: [configure, d.note].filter(Boolean).join(" ") || s.reason,
-    });
-  }
-  for (const f of analysis.findings || []) {
-    if (!(f.manualReview || f.outcome === "removed" || f.outcome === "manual_review")) continue;
-    if (swapped.has(f.identifier)) continue;
-    fixes.push({
-      id: `review:${f.identifier}`,
-      text: `${f.name} (${shortType(f.sourceType)}): ${OUTCOME_LABELS[f.outcome] || f.outcome}`,
-      note: f.recommendation || f.explanation,
-    });
-  }
-  for (const item of readiness) {
-    fixes.push({
-      id: `ready:${item.kind}:${item.componentId}`,
-      text: `${item.component}: ${item.title.toLowerCase()}`,
-      note: `${item.detail}. ${item.fix}`,
-    });
-  }
-  if (doc.variables && targetMajor >= 2) {
-    fixes.push({
-      id: "step:variables",
-      text: `Recreate ${doc.variables} group variable${doc.variables === 1 ? "" : "s"} as Parameter Context parameters.`,
-      note: "NiFi 2.x removed the Variable Registry; ${var} references resolve to nothing until you do.",
-    });
-  }
-
-  const start = [];
-  if (doc.componentCounts?.controllerService) {
-    start.push({ id: "step:services", text: "Enable the controller services in the imported group." });
-  }
-  start.push({ id: "step:start", text: "Start the processors and watch the first FlowFiles through each connection." });
-
-  return [
-    { title: "Import", items: importSteps },
-    { title: "Fix before starting", items: fixes },
-    { title: "Start", items: start },
-  ].filter((g) => g.items.length);
-}
-
-function renderChecklist() {
-  const groups = buildChecklist();
-  if (!groups.length) {
-    checklistBody.innerHTML = `<p class="panel-empty">Analyze a flow to build its import checklist.</p>`;
-    checklistProgress.textContent = "";
-    checklistCount.textContent = "";
-    return;
-  }
-  const ticks = loadTicks();
-  const total = groups.reduce((n, g) => n + g.items.length, 0);
-  const done = groups.reduce((n, g) => n + g.items.filter((i) => ticks[i.id]).length, 0);
-  checklistProgress.textContent = `${done} of ${total} done · ticks are saved in this browser`;
-  checklistCount.textContent = `${done}/${total}`;
-  checklistBody.innerHTML = groups
-    .map(
-      (g) => `<section class="checklist-group">
-        <h3>${escapeHtml(g.title)}</h3>
-        <ul class="checklist">${g.items
-          .map(
-            (item) => `<li class="${ticks[item.id] ? "done" : ""}"><label>
-              <input type="checkbox" data-task="${escapeHtml(item.id)}"${ticks[item.id] ? " checked" : ""} />
-              <span class="task-text">${escapeHtml(item.text)}${item.note ? `<small>${escapeHtml(item.note)}</small>` : ""}</span>
-            </label></li>`
-          )
-          .join("")}</ul>
-      </section>`
-    )
-    .join("");
-}
-
-checklistBody.addEventListener("change", (event) => {
-  const box = event.target.closest("input[data-task]");
-  if (!box || !checklistKey()) return;
-  const ticks = loadTicks();
-  if (box.checked) ticks[box.dataset.task] = true;
-  else delete ticks[box.dataset.task];
-  localStorage.setItem(checklistKey(), JSON.stringify(ticks));
-  renderChecklist();
-});
 
 printBtn.addEventListener("click", () => window.print());
 

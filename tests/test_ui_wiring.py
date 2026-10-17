@@ -116,20 +116,25 @@ def test_every_results_tab_has_its_panel(html):
         "panel-summary",
         "panel-changes",
         "panel-preview",
-        "panel-fidelity",
-        "panel-checklist",
         "panel-log",
     ]
     for panel in tabs:
         assert f'id="{panel}"' in html
 
 
+def test_fidelity_and_checklist_are_gone(html, js, css, server):
+    for name in ("fidelity", "checklist"):
+        assert name not in html.lower(), f"index.html still mentions {name}"
+        assert name not in js.lower(), f"app.js still mentions {name}"
+        assert name not in css.lower(), f"styles.css still mentions {name}"
+    assert "compare_flows" not in server
+
+
 def test_the_js_consumes_every_event_the_server_streams(js, server):
     for event in ("status", "error", "analysis", "preview", "generated"):
         assert f'"type": "{event}"' in server, f"ui/app.py never emits {event}"
         assert f'event.type === "{event}"' in js, f"app.js ignores {event} events"
-    for key in ("readiness", "fidelity"):
-        assert f'"{key}":' in server and f"event.{key}" in js
+    assert '"readiness":' in server and "event.readiness" in js
 
 
 def test_sample_flow_and_paste_loading(js, html):
@@ -145,18 +150,20 @@ def test_hosted_size_limit_is_checked_before_upload(js):
     assert "4.3 * 1024 * 1024" in js
 
 
-def test_print_report_covers_summary_changes_and_checklist(html, css):
+def test_print_report_lives_in_the_log_tab_and_covers_summary_changes_readiness(html, css, js):
+    log_panel = html.split('id="panel-log"', 1)[1].split("</div>", 1)[0]
+    assert 'id="print-report"' in log_panel
     printed = re.findall(r'id="(panel-[a-z]+)"[^>]*data-print="yes"', html)
-    assert printed == ["panel-summary", "panel-changes", "panel-checklist"]
-    assert "@media print" in css
-    assert "window.print()" in (APP_JS.read_text(encoding="utf-8"))
+    assert printed == ["panel-summary", "panel-changes"]
+    printing = css.split("@media print", 1)[1]
+    assert ".config-pane > .pane-section:not(#section-readiness)" in printing
+    assert "window.print()" in js
 
 
-def test_checklist_ticks_persist_per_flow_and_target(js):
-    key = js.split("function checklistKey(", 1)[1].split("\n}", 1)[0]
-    for part in ("u.filename", "u.size", "targetEl.value"):
-        assert part in key
-    assert "localStorage.setItem(checklistKey()" in js
+def test_downloads_say_how_to_import_the_file(js):
+    artifacts = js.split("function renderMigrationArtifacts(", 1)[1].split("\nfunction ", 1)[0]
+    assert "Upload template in the Operate palette" in artifacts
+    assert "drag a Process Group onto the NiFi canvas, choose Browse" in artifacts
 
 
 def test_suggestions_are_opt_in_and_sent_with_generate(js, html, css, server):
@@ -225,6 +232,15 @@ def test_switching_tabs_reveals_the_panel_under_the_sticky_tabs(js):
     select = js.split("function selectTab(", 1)[1].split("\nfunction ", 1)[0]
     assert "revealPanelTop(shown)" in select
     assert "function revealPanelTop(" in js
+
+
+def test_preview_zoom_survives_switching_tabs(js):
+    select = js.split("function selectTab(", 1)[1].split("\nfunction ", 1)[0]
+    assert 'if (name === "preview" && !preview.view) fitPreview();' in select
+    fit = js.split("function fitPreview(", 1)[1].split("\nfunction ", 1)[0]
+    assert "preview.view = null;" in fit
+    assert "preview.viewSize = { width: rect.width, height: rect.height }" in js
+    assert "const before = preview.viewSize;" in js
 
 
 def test_index_links_assets_by_content_hash():

@@ -186,7 +186,6 @@ def _run_migration_sync(
         }
     )
 
-    from fidelity import compare_flows
     from flow_preview import build_preview
     from readiness import check_readiness
 
@@ -224,16 +223,12 @@ def _run_migration_sync(
             }
         )
     artifacts = _build_migration_artifacts(analysis, generation, body.output_name)
-    fidelity = _optional(
-        "fidelity check", emit, compare_flows, doc, generation.migrated, generation.applied_changes
-    )
     emit(
         {
             "type": "generated",
             "generation": generation.to_dict(),
             "artifacts": artifacts,
             "analysis": analysis.to_dict(),
-            "fidelity": fidelity,
         }
     )
 

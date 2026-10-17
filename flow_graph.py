@@ -1,5 +1,5 @@
 """A uniform, read-only view of a source flow for the readiness, preview and
-fidelity passes.
+fidelity (test-only) passes.
 
 XML templates and JSON flow definitions are both turned into the same
 VersionedProcessGroup shape (`flowContents`), so each pass is written once.

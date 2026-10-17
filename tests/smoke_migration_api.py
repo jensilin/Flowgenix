@@ -16,6 +16,13 @@ import sys
 import urllib.request
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from fidelity import compare_flows  # noqa: E402
+from flow_document import parse_flow_file  # noqa: E402
+
 BASE = (os.getenv("FLOWGENIX_BASE_URL") or "").rstrip("/") or (
     f"http://127.0.0.1:{os.getenv('FLOWGENIX_PORT') or os.getenv('FLOW_STUDIO_PORT', '7860')}"
 )
@@ -205,12 +212,13 @@ def main() -> int:
         check("report names both versions", "1.25.0" in md and "2.11.0" in md)
         check("report has a manual-review section", "## Manual intervention required" in md)
 
-        fidelity = generated.get("fidelity") or {}
+        fidelity = compare_flows(parse_flow_file(xml_text, "legacy.xml"), flow, gen["appliedChanges"])
         check(
             "fidelity check passes on the migrated flow",
-            fidelity.get("allPassed") is True,
-            f"{fidelity.get('passed')}/{fidelity.get('total')}",
+            fidelity["allPassed"],
+            f"{fidelity['passed']}/{fidelity['total']}",
         )
+        check("server no longer streams a fidelity report", "fidelity" not in generated)
 
     # 8a. With nothing accepted, no component changes
     status, body = post(
