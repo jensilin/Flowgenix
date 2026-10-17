@@ -187,6 +187,54 @@ def test_changing_a_tick_discards_the_generated_file(js):
         assert part in invalidate
 
 
+def test_preview_can_show_the_flow_before_and_after_the_ticked_changes(js, html, css):
+    select = html.split('id="preview-mode"', 1)[1].split("</select>", 1)[0]
+    assert 'value="before"' in select and 'value="after"' in select
+    toolbar = html.split('class="preview-toolbar"', 1)[1].split('id="preview-stage"', 1)[0]
+    assert toolbar.index('id="preview-mode"') < toolbar.index('id="preview-crumbs"')
+    for element_id in ("preview-note", "preview-legend"):
+        assert f'id="{element_id}"' in html
+    # Ticking or unticking redraws the "after" view straight away.
+    changed = js.split("function suggestionChoicesChanged(", 1)[1].split("\n}", 1)[0]
+    assert "refreshPreview()" in changed
+    draw = js.split("function drawGroup(", 1)[1].split("\nfunction ", 1)[0]
+    for part in ("processorLook(", "relationshipMaps()", "groupTone("):
+        assert part in draw
+    assert "details?.relationshipMap" in js
+    for name in ("pv-add", "pv-conn-chg", "lg-add", "preview-mode", "pv-linked"):
+        assert f".{name}" in css, f".{name} is used by the preview but never styled"
+
+
+def test_preview_and_changes_link_to_each_other(js):
+    assert "showInChanges(linked.dataset.component)" in js
+    assert 'class="small show-in-preview"' in js
+    assert "showInPreview(button.dataset.component)" in js
+
+
+def test_rerunning_keeps_the_preview_place_but_a_new_file_resets_it(js):
+    run = js.split("async function runMigration(", 1)[1].split("\nasync function ", 1)[0]
+    assert "resetResults({ rerun: true })" in run
+    reader = js.split("async function readMigrationUpload(", 1)[1].split("\nasync function ", 1)[0]
+    assert "resetResults()" in reader
+    assert "resetPreview({ keepPlace: rerun })" in js
+    reset = js.split("function resetPreview(", 1)[1].split("\nfunction ", 1)[0]
+    assert "if (!keepPlace)" in reset and 'preview.mode = "after"' in reset
+
+
+def test_switching_tabs_reveals_the_panel_under_the_sticky_tabs(js):
+    select = js.split("function selectTab(", 1)[1].split("\nfunction ", 1)[0]
+    assert "revealPanelTop(shown)" in select
+    assert "function revealPanelTop(" in js
+
+
+def test_index_links_assets_by_content_hash():
+    from ui.app import _versioned_index
+
+    page = _versioned_index()
+    assert re.search(r'href="/static/styles\.css\?v=[0-9a-f]{12}"', page)
+    assert re.search(r'src="/static/app\.js\?v=[0-9a-f]{12}"', page)
+
+
 def test_upload_uses_text_in_json_transport(js):
     reader = js.split("async function readMigrationUpload(", 1)[1].split("\nasync function ", 1)[0]
     assert "await file.text()" in reader

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -47,9 +47,24 @@ class MigrationGenerateRequest(MigrationAnalyzeRequest):
     accepted_suggestions: list[str] = Field(default_factory=list)
 
 
+#: Assets the page links to. Each link carries a hash of the file's contents so a
+#: browser never pairs a new page with a stale cached script or stylesheet.
+_VERSIONED_ASSETS = ("styles.css", "app.js")
+
+
+def _versioned_index() -> str:
+    import hashlib
+
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    for name in _VERSIONED_ASSETS:
+        digest = hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:12]
+        html = html.replace(f'"/static/{name}"', f'"/static/{name}?v={digest}"')
+    return html
+
+
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+async def index() -> HTMLResponse:
+    return HTMLResponse(_versioned_index(), headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/migration/versions")

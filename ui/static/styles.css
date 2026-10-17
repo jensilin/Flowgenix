@@ -631,6 +631,20 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); margi
   stroke-width: 4px;
 }
 .pv-arrow { fill: var(--muted); }
+.pv-add .pv-box { fill: var(--add-wash); stroke: var(--add); }
+.pv-add .pv-tagtext { fill: var(--add); }
+.pv-linked { cursor: pointer; }
+.pv-linked:hover .pv-box, .pv-linked:focus-visible .pv-box { stroke-width: 3; }
+.pv-focus .pv-box { stroke: var(--accent); stroke-width: 3; }
+.pv-conn-chg text { fill: var(--add); font-weight: 600; }
+.pv-conn-chg path { stroke: var(--add); }
+.preview-mode { width: auto; max-width: 100%; min-height: 30px; font-size: 13px; }
+.preview-note { margin: var(--s2) 0 0; font-size: 12px; color: var(--muted); }
+.preview-note:empty { display: none; }
+.preview-legend i.lg-add { border-color: var(--add); background: var(--add-wash); }
+.change-group-head .show-in-preview { flex: none; }
+.change-group.flash { animation: flash 1.2s ease-out; }
+@keyframes flash { from { background: var(--accent-wash); } }
 
 /* ---------- fidelity ---------- */
 
@@ -790,7 +804,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); margi
 }
 
 @media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; }
+  * { transition: none !important; animation: none !important; }
 }
 
 /* ---------- print: summary, changes and checklist as a handover report ---------- */

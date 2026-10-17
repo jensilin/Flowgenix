@@ -157,6 +157,10 @@
 
       <div class="tab-panel hidden" id="panel-preview" role="tabpanel" aria-labelledby="tab-preview">
         <div class="preview-toolbar">
+          <select id="preview-mode" class="preview-mode" aria-label="Which version of the flow to draw" disabled>
+            <option value="before">Before: source file</option>
+            <option value="after">After: ticked changes</option>
+          </select>
           <nav id="preview-crumbs" class="preview-crumbs" aria-label="Process group path"></nav>
           <div class="preview-tools">
             <button type="button" id="preview-zoom-out" class="small" aria-label="Zoom out">−</button>
@@ -167,7 +171,8 @@
         <div id="preview-stage" class="preview-stage">
           <svg id="preview-svg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Flow preview"></svg>
         </div>
-        <div class="preview-legend">
+        <p id="preview-note" class="preview-note"></p>
+        <div id="preview-legend" class="preview-legend">
           <span><i></i>compatible</span>
           <span><i class="lg-chg"></i>changed on migration</span>
           <span><i class="lg-del"></i>removed or needs review</span>

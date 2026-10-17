@@ -42,6 +42,9 @@ const suggestionsList = document.getElementById("suggestions-list");
 const suggestionsProgress = document.getElementById("suggestions-progress");
 const acceptAllBtn = document.getElementById("suggestions-accept-all");
 const clearSuggestionsBtn = document.getElementById("suggestions-clear");
+const previewMode = document.getElementById("preview-mode");
+const previewNote = document.getElementById("preview-note");
+const previewLegend = document.getElementById("preview-legend");
 const previewCrumbs = document.getElementById("preview-crumbs");
 const previewStage = document.getElementById("preview-stage");
 const previewSvg = document.getElementById("preview-svg");
@@ -259,13 +262,27 @@ exportBtn.addEventListener("click", () => {
 const tabs = [...document.querySelectorAll(".tab")];
 
 function selectTab(name) {
+  let shown = null;
   for (const tab of tabs) {
     const active = tab.dataset.tab === name;
     tab.setAttribute("aria-selected", String(active));
     tab.tabIndex = active ? 0 : -1;
-    document.getElementById(tab.getAttribute("aria-controls")).classList.toggle("hidden", !active);
+    const panel = document.getElementById(tab.getAttribute("aria-controls"));
+    panel.classList.toggle("hidden", !active);
+    if (active) shown = panel;
   }
+  if (shown) revealPanelTop(shown);
   if (name === "preview") fitPreview();
+}
+
+// A panel switched to while the pane is scrolled down starts under the sticky tab bar.
+function revealPanelTop(panel) {
+  const hidden = tabs[0].parentElement.getBoundingClientRect().bottom - panel.getBoundingClientRect().top;
+  if (hidden <= 0) return;
+  const pane = document.getElementById("migration-report");
+  const fromPane = Math.min(pane.scrollTop, hidden);
+  pane.scrollTop -= fromPane;
+  if (hidden > fromPane) window.scrollBy(0, fromPane - hidden);
 }
 
 tabs.forEach((tab, index) => {
@@ -332,7 +349,8 @@ function selectedOutputFormat() {
 
 // ---------- reset ----------
 
-function resetResults() {
+// `rerun` is a new analysis of the same file: the preview keeps its mode, group and zoom.
+function resetResults({ rerun = false } = {}) {
   for (const url of artifactUrls) URL.revokeObjectURL(url);
   artifactUrls = [];
   state.analysis = null;
@@ -360,7 +378,7 @@ function resetResults() {
   suggestionsList.innerHTML = "";
   fidelityBody.innerHTML = `<p class="panel-empty">Generate the migrated flow to compare it with the source, component by component.</p>`;
   fidelityCount.textContent = "";
-  resetPreview();
+  resetPreview({ keepPlace: rerun });
   renderChecklist();
   syncGenerateButton();
 }
@@ -477,7 +495,7 @@ async function runMigration(generate) {
     }
   }
   const runId = ++state.runId;
-  resetResults();
+  resetResults({ rerun: true });
   state.running = true;
   analyzeBtn.disabled = true;
   generateBtn.disabled = true;
@@ -539,6 +557,7 @@ function handleEvent(event) {
     renderReadiness(state.readiness);
     renderChanges();
     renderChecklist();
+    refreshPreview();
   }
   if (event.type === "preview") renderPreview(event.preview);
   if (event.type === "generated") {
@@ -552,6 +571,7 @@ function handleEvent(event) {
     renderChanges();
     renderFidelity(state.fidelity);
     renderChecklist();
+    refreshPreview();
     const review = event.analysis?.summary?.manualReview;
     setStatus(review ? "generated · review needed" : "generated", review ? "chg" : "add");
     log("Migrated flow is ready to download.");
@@ -727,13 +747,19 @@ function renderSuggestions() {
   }
   const groups = new Map();
   for (const s of list) {
-    if (!groups.has(s.componentId)) groups.set(s.componentId, { name: s.component, rows: [] });
+    if (!groups.has(s.componentId)) {
+      groups.set(s.componentId, { id: s.componentId, name: s.component, kind: s.componentKind, rows: [] });
+    }
     groups.get(s.componentId).rows.push(s);
   }
   suggestionsList.innerHTML = [...groups.values()]
     .map(
-      (group) => `<section class="change-group">
-        <div class="change-group-head"><strong>${escapeHtml(group.name || "component")}</strong><span>${group.rows.length} suggestion${group.rows.length === 1 ? "" : "s"}</span></div>
+      (group) => `<section class="change-group" data-component="${escapeHtml(group.id)}">
+        <div class="change-group-head"><strong>${escapeHtml(group.name || "component")}</strong><span>${group.rows.length} suggestion${group.rows.length === 1 ? "" : "s"}</span>${
+          group.kind === "processor"
+            ? `<button type="button" class="small show-in-preview" data-component="${escapeHtml(group.id)}">Show in preview</button>`
+            : ""
+        }</div>
         ${group.rows.map(suggestionRow).join("")}
       </section>`
     )
@@ -815,7 +841,13 @@ function invalidateGeneration() {
 function suggestionChoicesChanged() {
   invalidateGeneration();
   syncSuggestionProgress();
+  refreshPreview();
 }
+
+suggestionsList.addEventListener("click", (event) => {
+  const button = event.target.closest(".show-in-preview");
+  if (button) showInPreview(button.dataset.component);
+});
 
 suggestionsList.addEventListener("change", (event) => {
   const box = event.target.closest(".suggestion-check");
@@ -941,20 +973,47 @@ changesFilters.addEventListener("click", (event) => {
 
 // ---------- canvas preview ----------
 
-const preview = { data: null, group: null, view: null, bounds: null, pointers: new Map(), drag: null };
+const preview = {
+  data: null,
+  group: null,
+  view: null,
+  bounds: null,
+  pointers: new Map(),
+  drag: null,
+  mode: "after",
+  focus: null,
+  restore: null,
+};
 
-function resetPreview() {
+function resetPreview({ keepPlace = false } = {}) {
+  preview.restore = keepPlace && preview.group ? { group: preview.group, view: preview.view } : null;
+  if (!keepPlace) {
+    preview.mode = "after";
+    preview.focus = null;
+  }
   preview.data = null;
   preview.group = null;
   preview.view = null;
   previewCrumbs.innerHTML = "";
   previewSvg.innerHTML = `<text x="24" y="40" class="pv-sub">Analyze a flow to draw its canvas.</text>`;
   previewSvg.setAttribute("viewBox", "0 0 600 300");
+  syncPreviewControls();
 }
 
 function renderPreview(data) {
+  const restore = preview.restore && data.groups[preview.restore.group] ? preview.restore : null;
+  preview.restore = null;
   preview.data = data;
-  openGroup(data.root);
+  if (!restore) {
+    openGroup(data.root);
+    return;
+  }
+  preview.group = restore.group;
+  drawGroup();
+  renderCrumbs();
+  syncPreviewControls();
+  if (restore.view) setView(restore.view);
+  else fitPreview();
 }
 
 function openGroup(id) {
@@ -962,7 +1021,168 @@ function openGroup(id) {
   preview.group = id;
   drawGroup();
   renderCrumbs();
+  syncPreviewControls();
   fitPreview();
+}
+
+// "After" redraws on every tick, so it has to keep the user's zoom and group.
+function refreshPreview() {
+  if (preview.data && preview.group) drawGroup();
+  syncPreviewControls();
+}
+
+function previewShowsAfter() {
+  return preview.mode === "after" && offeredSuggestions().length > 0;
+}
+
+function syncPreviewControls() {
+  const offered = offeredSuggestions();
+  const ticked = offered.filter((s) => acceptedIds.has(s.id)).length;
+  previewMode.disabled = !preview.data || offered.length === 0;
+  previewMode.value = previewShowsAfter() ? "after" : "before";
+  previewMode.options[1].textContent = `After: ${ticked} of ${offered.length} ticked change${offered.length === 1 ? "" : "s"}`;
+
+  let note = "";
+  if (!preview.data) note = "";
+  else if (!offered.length) note = "Nothing to suggest for this target, so the generated flow has the same components as the source.";
+  else if (!previewShowsAfter()) note = "The flow as uploaded, coloured by what the target does with each component.";
+  else if (state.generation) note = "With the ticked changes. This is what the generated file contains.";
+  else note = "With the ticked changes, as Generate will write them. Tick or untick in Changes and this updates.";
+  previewNote.textContent = note;
+
+  previewLegend.innerHTML = previewShowsAfter()
+    ? `<span><i></i>unchanged</span>
+       <span><i class="lg-add"></i>ticked change applied</span>
+       <span><i class="lg-chg"></i>optional change not ticked</span>
+       <span><i class="lg-del"></i>required change not ticked, or needs review</span>
+       <span><i class="lg-group"></i>process group (click to open)</span>`
+    : `<span><i></i>compatible</span>
+       <span><i class="lg-chg"></i>changed on migration</span>
+       <span><i class="lg-del"></i>removed or needs review</span>
+       <span><i class="lg-group"></i>process group (click to open)</span>`;
+}
+
+previewMode.addEventListener("change", () => {
+  preview.mode = previewMode.value;
+  refreshPreview();
+});
+
+// Ticked and unticked suggestions per component.
+function suggestionsByComponent() {
+  const map = new Map();
+  for (const s of offeredSuggestions()) {
+    if (!map.has(s.componentId)) map.set(s.componentId, { ticked: [], unticked: [] });
+    map.get(s.componentId)[acceptedIds.has(s.id) ? "ticked" : "unticked"].push(s);
+  }
+  return map;
+}
+
+// Components generation leaves for manual review unless a type swap is ticked.
+let blockedCache = { analysis: null, ids: new Set() };
+function blockedIds() {
+  if (blockedCache.analysis !== state.analysis) {
+    const findings = state.analysis?.findings || [];
+    blockedCache = {
+      analysis: state.analysis,
+      ids: new Set(findings.filter((f) => f.blockAutoMigration).map((f) => f.identifier)),
+    };
+  }
+  return blockedCache.ids;
+}
+
+// How a processor is drawn. "After" mirrors what generation does: an accepted
+// type swap changes the type and clears a removal; anything else blocked stays
+// blocked; unticked required changes leave the component invalid on the target.
+function processorLook(proc, picks) {
+  const sourceTone = OUTCOME_TONE[proc.outcome] || "";
+  const sourceLabel = sourceTone ? OUTCOME_LABELS[proc.outcome] || proc.outcome : "";
+  if (!previewShowsAfter() || !picks) {
+    return { tone: sourceTone, tag: sourceLabel, type: proc.type, title: `${proc.name} (${proc.type})` };
+  }
+  const swap = picks.ticked.find((s) => s.kind === "type");
+  const type = swap ? shortType(swap.to) : proc.type;
+  const requiredLeft = picks.unticked.filter((s) => s.required).length;
+  const optionalLeft = picks.unticked.length - requiredLeft;
+  const blocked = blockedIds().has(proc.id) && !swap;
+
+  const parts = [swap ? `replaced, was ${proc.type}` : sourceLabel];
+  if (!swap && picks.ticked.length) parts.push(`${picks.ticked.length} applied`);
+  if (swap && picks.ticked.length > 1) parts.push(`${picks.ticked.length - 1} more applied`);
+  if (requiredLeft) parts.push(`${requiredLeft} required not ticked`);
+  if (optionalLeft) parts.push(`${optionalLeft} not ticked`);
+  if (blocked && sourceLabel !== OUTCOME_LABELS.manual_review) parts.push("needs review");
+
+  let tone = "";
+  if (blocked || requiredLeft) tone = "del";
+  else if (optionalLeft) tone = "chg";
+  else if (picks.ticked.length) tone = "add";
+  return {
+    tone,
+    tag: parts.filter(Boolean).join(" · "),
+    type,
+    title: swap ? `${proc.name} (${type}, was ${proc.type})` : `${proc.name} (${type})`,
+  };
+}
+
+const TONE_RANK = { "": 0, add: 1, chg: 2, del: 3 };
+
+// The most severe tone inside a group, so a closed group still shows trouble.
+function groupTone(id, picks) {
+  const group = preview.data.groups[id];
+  if (!group) return "";
+  let worst = "";
+  for (const proc of group.processors) {
+    const tone = processorLook(proc, picks.get(proc.id)).tone;
+    if (TONE_RANK[tone] > TONE_RANK[worst]) worst = tone;
+  }
+  for (const child of group.children) {
+    const tone = groupTone(child.id, picks);
+    if (TONE_RANK[tone] > TONE_RANK[worst]) worst = tone;
+  }
+  return worst;
+}
+
+// Accepted type swaps rename relationships on the connections leaving them.
+function relationshipMaps() {
+  const maps = new Map();
+  if (!previewShowsAfter()) return maps;
+  for (const s of offeredSuggestions()) {
+    const map = s.kind === "type" && acceptedIds.has(s.id) ? s.details?.relationshipMap : null;
+    if (map && Object.keys(map).length) maps.set(s.componentId, map);
+  }
+  return maps;
+}
+
+function groupOfComponent(componentId) {
+  for (const group of Object.values(preview.data?.groups || {})) {
+    if (group.processors.some((p) => p.id === componentId)) return group.id;
+  }
+  return null;
+}
+
+function showInPreview(componentId) {
+  const groupId = groupOfComponent(componentId);
+  if (!groupId) return;
+  preview.mode = "after";
+  preview.focus = componentId;
+  selectTab("preview");
+  openGroup(groupId);
+  const proc = preview.data.groups[groupId].processors.find((p) => p.id === componentId);
+  const [w, h] = preview.data.sizes.processor;
+  if (proc && preview.view) {
+    const v = preview.view;
+    setView({ ...v, x: proc.x + w / 2 - v.w / 2, y: proc.y + h / 2 - v.h / 2 });
+  }
+}
+
+function showInChanges(componentId) {
+  const section = [...suggestionsList.querySelectorAll(".change-group")].find((el) => el.dataset.component === componentId);
+  if (!section) return;
+  selectTab("changes");
+  section.scrollIntoView({ block: "start", behavior: "smooth" });
+  section.classList.remove("flash");
+  void section.offsetWidth;
+  section.classList.add("flash");
 }
 
 function renderCrumbs() {
@@ -979,7 +1199,10 @@ function renderCrumbs() {
 
 previewCrumbs.addEventListener("click", (event) => {
   const crumb = event.target.closest(".crumb");
-  if (crumb && crumb.getAttribute("aria-current") !== "page") openGroup(crumb.dataset.group);
+  if (crumb && crumb.getAttribute("aria-current") !== "page") {
+    preview.focus = null;
+    openGroup(crumb.dataset.group);
+  }
 });
 
 function drawGroup() {
@@ -988,6 +1211,9 @@ function drawGroup() {
   const flagged = new Set(
     (state.readiness?.items || []).filter((i) => i.severity === "action").map((i) => i.componentId)
   );
+  const picks = suggestionsByComponent();
+  const relMaps = relationshipMaps();
+  const after = previewShowsAfter();
   const boxes = new Map();
   const shapes = [];
   const add = (id, x, y, w, h) => boxes.set(id, { x, y, w, h });
@@ -1002,7 +1228,8 @@ function drawGroup() {
   for (const child of group.children) {
     const [w, h] = sizes.group;
     add(child.id, child.x, child.y, w, h);
-    const tone = OUTCOME_TONE[child.outcome] ? ` pv-${OUTCOME_TONE[child.outcome]}` : "";
+    const toneKey = after ? groupTone(child.id, picks) : OUTCOME_TONE[child.outcome];
+    const tone = toneKey ? ` pv-${toneKey}` : "";
     shapes.push(`<g class="pv-group${tone}" data-group="${escapeHtml(child.id)}" transform="translate(${child.x} ${child.y})" tabindex="0" role="button" aria-label="Open ${escapeHtml(child.name)}">
       <title>Open ${escapeHtml(child.name)}</title>
       <rect class="pv-box" width="${w}" height="${h}" rx="2"/>
@@ -1013,17 +1240,22 @@ function drawGroup() {
   for (const proc of group.processors) {
     const [w, h] = sizes.processor;
     add(proc.id, proc.x, proc.y, w, h);
-    const toneKey = OUTCOME_TONE[proc.outcome];
-    const tone = toneKey ? ` pv-${toneKey}` : "";
-    const tag = toneKey ? `<text class="pv-tagtext" x="20" y="${h - 20}">${escapeHtml(OUTCOME_LABELS[proc.outcome] || proc.outcome)}</text>` : "";
+    const look = processorLook(proc, picks.get(proc.id));
+    const tone = look.tone ? ` pv-${look.tone}` : "";
+    const tag = look.tag ? `<text class="pv-tagtext" x="20" y="${h - 20}">${escapeHtml(truncate(look.tag, 46))}</text>` : "";
     const flag = flagged.has(proc.id)
       ? `<g class="pv-warn"><rect class="pv-flag" x="${w - 26}" y="12" width="14" height="14" rx="2"/><title>Import readiness: needs a fix</title></g>`
       : "";
-    shapes.push(`<g class="pv-proc${tone}" transform="translate(${proc.x} ${proc.y})">
-      <title>${escapeHtml(`${proc.name} (${proc.type})`)}</title>
+    const linked = picks.has(proc.id);
+    const focus = preview.focus === proc.id ? " pv-focus" : "";
+    const attrs = linked
+      ? ` data-component="${escapeHtml(proc.id)}" tabindex="0" role="button" aria-label="${escapeHtml(`${proc.name}: show its suggestions in Changes`)}"`
+      : "";
+    shapes.push(`<g class="pv-proc${tone}${linked ? " pv-linked" : ""}${focus}"${attrs} transform="translate(${proc.x} ${proc.y})">
+      <title>${escapeHtml(look.title)}${linked ? " · click to see its suggestions" : ""}</title>
       <rect class="pv-box" width="${w}" height="${h}" rx="2"/>
       <text class="pv-name" x="20" y="38">${escapeHtml(truncate(proc.name, 34))}</text>
-      <text class="pv-sub" x="20" y="62">${escapeHtml(truncate(proc.type, 40))}</text>
+      <text class="pv-sub" x="20" y="62">${escapeHtml(truncate(look.type, 40))}</text>
       ${tag}${flag}</g>`);
   }
   for (const port of group.ports) {
@@ -1053,7 +1285,10 @@ function drawGroup() {
     const src = boxes.get(conn.source.id) || boxes.get(conn.source.groupId);
     const dst = boxes.get(conn.destination.id) || boxes.get(conn.destination.groupId);
     if (!src || !dst) continue;
-    edges.push(edgePath(src, dst, conn));
+    const map = relMaps.get(conn.source.id);
+    const relationships = map ? conn.relationships.map((r) => map[r] || r) : conn.relationships;
+    const changed = relationships.some((r, i) => r !== conn.relationships[i]);
+    edges.push(edgePath(src, dst, { ...conn, relationships }, changed));
   }
 
   preview.bounds = boundsOf([...boxes.values()]);
@@ -1062,12 +1297,13 @@ function drawGroup() {
     <g>${edges.join("")}</g><g>${shapes.join("")}</g>${empty}`;
 }
 
-function edgePath(src, dst, conn) {
+function edgePath(src, dst, conn, changed = false) {
   const label = escapeHtml(truncate((conn.relationships || []).join(", ") || conn.name, 28));
+  const cls = changed ? "pv-conn pv-conn-chg" : "pv-conn";
   if (src === dst) {
     const x = src.x + src.w;
     const y = src.y + src.h / 2;
-    return `<g class="pv-conn"><path d="M${x} ${y - 24} C${x + 70} ${y - 24} ${x + 70} ${y + 24} ${x} ${y + 24}" marker-end="url(#pv-arrow)"/><text x="${x + 74}" y="${y + 4}">${label}</text></g>`;
+    return `<g class="${cls}"><path d="M${x} ${y - 24} C${x + 70} ${y - 24} ${x + 70} ${y + 24} ${x} ${y + 24}" marker-end="url(#pv-arrow)"/><text x="${x + 74}" y="${y + 4}">${label}</text></g>`;
   }
   const centre = (b) => ({ x: b.x + b.w / 2, y: b.y + b.h / 2 });
   const points = [centre(src), ...(conn.bends || []), centre(dst)];
@@ -1077,7 +1313,7 @@ function edgePath(src, dst, conn) {
   const mid = Math.floor((points.length - 1) / 2);
   const lx = (points[mid].x + points[mid + 1].x) / 2;
   const ly = (points[mid].y + points[mid + 1].y) / 2;
-  return `<g class="pv-conn"><path d="${d}" marker-end="url(#pv-arrow)"/><text x="${lx.toFixed(1)}" y="${(ly - 6).toFixed(1)}" text-anchor="middle">${label}</text></g>`;
+  return `<g class="${cls}"><path d="${d}" marker-end="url(#pv-arrow)"/><text x="${lx.toFixed(1)}" y="${(ly - 6).toFixed(1)}" text-anchor="middle">${label}</text></g>`;
 }
 
 // Where the line from a box's centre towards `toward` leaves the box.
@@ -1184,7 +1420,9 @@ function endPointer(event) {
   previewStage.classList.remove("panning");
   if (event.type === "pointerup" && preview.drag && !preview.drag.moved) {
     const group = preview.drag.target.closest?.(".pv-group");
+    const linked = preview.drag.target.closest?.(".pv-linked");
     if (group) openGroup(group.dataset.group);
+    else if (linked) showInChanges(linked.dataset.component);
   }
   if (!preview.pointers.size) preview.drag = null;
 }
@@ -1192,11 +1430,12 @@ previewStage.addEventListener("pointerup", endPointer);
 previewStage.addEventListener("pointercancel", endPointer);
 
 previewSvg.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
   const group = event.target.closest?.(".pv-group");
-  if (group && (event.key === "Enter" || event.key === " ")) {
-    event.preventDefault();
-    openGroup(group.dataset.group);
-  }
+  const linked = event.target.closest?.(".pv-linked");
+  if (group || linked) event.preventDefault();
+  if (group) openGroup(group.dataset.group);
+  else if (linked) showInChanges(linked.dataset.component);
 });
 
 zoomInBtn.addEventListener("click", () => zoomAt(1 / 1.25));
