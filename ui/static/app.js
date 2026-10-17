@@ -343,6 +343,19 @@ function resetResults() {
   fidelityCount.textContent = "";
   resetPreview();
   renderChecklist();
+  syncGenerateButton();
+}
+
+// Once a migrated file exists, the Generate button downloads it. Anything that
+// would produce a different file clears the artifacts and turns it back.
+function migratedFile() {
+  return state.artifacts?.migratedFlow || state.artifacts?.migratedXml || null;
+}
+
+function syncGenerateButton() {
+  const file = migratedFile();
+  generateBtn.textContent = file ? "Download" : "Generate";
+  generateBtn.title = file ? `Download ${file.name}` : "";
 }
 
 // ---------- loading a source ----------
@@ -505,6 +518,7 @@ function handleEvent(event) {
     state.fidelity = event.fidelity || null;
     renderMigrationReport(event.analysis);
     renderMigrationArtifacts(state.artifacts);
+    syncGenerateButton();
     renderChanges();
     renderFidelity(state.fidelity);
     renderChecklist();
@@ -1264,7 +1278,15 @@ document.addEventListener("paste", (event) => {
 });
 
 analyzeBtn.addEventListener("click", () => runMigration(false).catch(reportError));
-generateBtn.addEventListener("click", () => runMigration(true).catch(reportError));
+generateBtn.addEventListener("click", () => {
+  const download = migratedFile() && artifactsEl.querySelector(".primary-download");
+  if (download) {
+    download.click();
+    log(`Downloaded ${migratedFile().name}.`);
+    return;
+  }
+  runMigration(true).catch(reportError);
+});
 
 function rerunAnalysis() {
   if (state.upload && !state.running) runMigration(false).catch(reportError);
@@ -1274,6 +1296,8 @@ targetEl.addEventListener("change", () => {
   syncXmlAvailability();
   rerunAnalysis();
 });
+xmlRadio.addEventListener("change", rerunAnalysis);
+jsonRadio.addEventListener("change", rerunAnalysis);
 
 resetPreview();
 loadMigrationVersions().catch((err) => log(`Could not load versions: ${err.message || err}`, "error"));
